@@ -1,0 +1,8 @@
+# Backend Requirements (Java)
+java>=1.8.0
+javac>=1.8.0
+
+# Frontend Requirements (Node.js/Electron)
+nodejs>=14.0.0
+npm>=6.0.0
+electron>=28.0.0

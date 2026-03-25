@@ -1,0 +1,57 @@
+[
+  {
+    "ipAddress": "192.168.1.10",
+    "type": "Brute Force",
+    "severity": "High"
+  },
+  {
+    "ipAddress": "10.0.0.22",
+    "type": "Brute Force",
+    "severity": "High"
+  },
+  {
+    "ipAddress": "203.0.113.50",
+    "type": "Brute Force",
+    "severity": "High"
+  },
+  {
+    "ipAddress": "203.0.113.50",
+    "type": "Suspicious Activity",
+    "severity": "Medium"
+  },
+  {
+    "ipAddress": "192.168.1.10",
+    "type": "Unusual Login Time",
+    "severity": "Low"
+  },
+  {
+    "ipAddress": "192.168.1.10",
+    "type": "Unusual Login Time",
+    "severity": "Low"
+  },
+  {
+    "ipAddress": "192.168.1.10",
+    "type": "Unusual Login Time",
+    "severity": "Low"
+  },
+  {
+    "ipAddress": "192.168.1.10",
+    "type": "Unusual Login Time",
+    "severity": "Low"
+  },
+  {
+    "ipAddress": "192.168.1.10",
+    "type": "Unusual Login Time",
+    "severity": "Low"
+  },
+  {
+    "ipAddress": "192.168.1.10",
+    "type": "Unusual Login Time",
+    "severity": "Low"
+  },
+  {
+    "ipAddress": "192.168.1.10",
+    "type": "Unusual Login Time",
+    "severity": "Low"
+  }
+]
