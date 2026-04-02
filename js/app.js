@@ -18,7 +18,8 @@ const state = {
   },
   mockAlerts: [],
   mockSuspiciousIPs: [],
-  uploadedFiles: []
+  uploadedFiles: [],
+  charts: {}
 };
 
 // ============ MOCK DATA ============
@@ -147,7 +148,7 @@ function renderDashboard(container) {
         <div class="bg-slate-800/50 rounded-xl border border-slate-700/50 p-6">
           <h3 class="text-lg font-semibold text-slate-100 mb-4">Recent Activity</h3>
           <div class="terminal-log h-64 overflow-y-auto">
-            ${generateMockLogLines(8)}
+            ${state.mockAlerts.slice(0, 50).map(a => `<div class="log-line">[${a.timestamp || new Date().toISOString()}] ${a.eventType || 'Unknown'} - ${a.ip || a.ipAddress || 'Unknown IP'}</div>`).join('')}
           </div>
         </div>
       </div>
@@ -156,35 +157,7 @@ function renderDashboard(container) {
   container.innerHTML = html;
   initDashboardCharts();
   animateCounters();
-  if (API.getStats) {
-    fetchWithFallback(API.getStats, function() { return state.stats; }).then(function(data) {
-      if (data && typeof data.totalLogs === 'number') {
-        state.stats = data;
-        document.querySelectorAll('.counter-value').forEach(function(el) {
-          var key = el.closest('.stat-card');
-          if (key) {
-            var txt = key.querySelector('.text-sm');
-            if (txt) {
-              if (txt.textContent.indexOf('Logs') >= 0) el.dataset.value = data.totalLogs;
-              else if (txt.textContent.indexOf('Alerts') >= 0) el.dataset.value = data.totalAlerts;
-              else if (txt.textContent.indexOf('Failed') >= 0) el.dataset.value = data.failedLogins;
-              else if (txt.textContent.indexOf('Unique') >= 0) el.dataset.value = data.uniqueIPs;
-            }
-          }
-          el.textContent = formatNumber(parseInt(el.dataset.value) || 0);
-        });
-      }
-    });
-  }
-  if (API.getRecentLogs) {
-    fetchWithFallback(API.getRecentLogs, function() { return []; }).then(function(lines) {
-      var logEl = document.querySelector('.terminal-log .log-line');
-      if (logEl && lines && lines.length > 0) {
-        var parent = logEl.parentNode;
-        parent.innerHTML = lines.map(function(l) { return '<div class="log-line">' + l + '</div>'; }).join('');
-      }
-    });
-  }
+  // Removed overriding getStats and getRecentLogs to preserve live WebSocket data.
 }
 
 function animateCounters() {
@@ -216,17 +189,60 @@ function generateMockLogLines(count) {
   return html;
 }
 
+function updateDynamicCharts() {
+  if (state.currentPage === 'dashboard') {
+    if (state.charts.barChart) {
+      const typeCounts = {};
+      state.mockAlerts.forEach(a => {
+        const type = a.eventType || 'Unknown';
+        typeCounts[type] = (typeCounts[type] || 0) + 1;
+      });
+      const sortedTypes = Object.keys(typeCounts).sort((a,b) => typeCounts[b] - typeCounts[a]).slice(0, 5);
+      state.charts.barChart.data.labels = sortedTypes;
+      state.charts.barChart.data.datasets[0].data = sortedTypes.map(t => typeCounts[t]);
+      state.charts.barChart.update();
+    }
+    if (state.charts.pieChart) {
+      let success = 0, failed = 0, unknown = 0;
+      state.mockAlerts.forEach(a => {
+        const t = (a.eventType || '').toLowerCase();
+        if (t.includes('success') || t.includes('normal')) success++;
+        else if (t.includes('fail') || t.includes('error') || t.includes('denied') || t.includes('brute')) failed++;
+        else unknown++;
+      });
+      state.charts.pieChart.data.datasets[0].data = [success, failed, unknown];
+      state.charts.pieChart.update();
+    }
+    if (state.charts.lineChart) {
+      const recentFails = state.mockAlerts.slice(0, 50).filter(a => (a.eventType||'').toLowerCase().includes('fail')).length;
+      state.charts.lineChart.data.datasets[0].data.shift();
+      state.charts.lineChart.data.datasets[0].data.push(recentFails);
+      state.charts.lineChart.update();
+    }
+  } else if (state.currentPage === 'suspicious-ips') {
+    if (state.charts.ipChart) {
+      const topIPs = [...state.mockSuspiciousIPs].sort((a,b) => b.attempts - a.attempts).slice(0, 5);
+      state.charts.ipChart.data.labels = topIPs.map(ip => ip.ip.split('.').pop());
+      state.charts.ipChart.data.datasets[0].data = topIPs.map(ip => ip.attempts);
+      state.charts.ipChart.update();
+    }
+  }
+}
+
 function initDashboardCharts() {
-  // Line Chart - Failed Logins
+  if (state.charts.lineChart) state.charts.lineChart.destroy();
+  if (state.charts.barChart) state.charts.barChart.destroy();
+  if (state.charts.pieChart) state.charts.pieChart.destroy();
+
   const lineCtx = document.getElementById('lineChart');
   if (lineCtx) {
-    new Chart(lineCtx.getContext('2d'), {
+    state.charts.lineChart = new Chart(lineCtx.getContext('2d'), {
       type: 'line',
       data: {
-        labels: ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00', '24:00'],
+        labels: ['-6m', '-5m', '-4m', '-3m', '-2m', '-1m', 'Now'],
         datasets: [{
-          label: 'Failed Logins',
-          data: [12, 19, 45, 78, 156, 89, 42],
+          label: 'Failed Logins Trend',
+          data: [0, 0, 0, 0, 0, 0, 0],
           borderColor: '#f43f5e',
           backgroundColor: 'rgba(244, 63, 94, 0.1)',
           fill: true,
@@ -236,65 +252,47 @@ function initDashboardCharts() {
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        plugins: {
-          legend: { display: false }
-        },
+        plugins: { legend: { display: false } },
         scales: {
-          y: {
-            grid: { color: 'rgba(71, 85, 105, 0.3)' },
-            ticks: { color: '#94a3b8' }
-          },
-          x: {
-            grid: { color: 'rgba(71, 85, 105, 0.3)' },
-            ticks: { color: '#94a3b8' }
-          }
+          y: { grid: { color: 'rgba(71, 85, 105, 0.3)' }, ticks: { color: '#94a3b8' } },
+          x: { grid: { color: 'rgba(71, 85, 105, 0.3)' }, ticks: { color: '#94a3b8' } }
         }
       }
     });
   }
 
-  // Bar Chart
   const barCtx = document.getElementById('barChart');
   if (barCtx) {
-    new Chart(barCtx.getContext('2d'), {
+    state.charts.barChart = new Chart(barCtx.getContext('2d'), {
       type: 'bar',
       data: {
-        labels: ['Failed Login', 'Brute Force', 'Port Scan', 'Suspicious', 'Priv. Escalation'],
+        labels: [],
         datasets: [{
           label: 'Count',
-          data: [45, 23, 12, 18, 8],
+          data: [],
           backgroundColor: ['#f43f5e', '#f97316', '#eab308', '#22c55e', '#06b6d4'].map(c => c + 'cc')
         }]
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        plugins: {
-          legend: { display: false }
-        },
+        plugins: { legend: { display: false } },
         scales: {
-          y: {
-            grid: { color: 'rgba(71, 85, 105, 0.3)' },
-            ticks: { color: '#94a3b8' }
-          },
-          x: {
-            grid: { display: false },
-            ticks: { color: '#94a3b8', maxRotation: 45 }
-          }
+          y: { grid: { color: 'rgba(71, 85, 105, 0.3)' }, ticks: { color: '#94a3b8' } },
+          x: { grid: { display: false }, ticks: { color: '#94a3b8', maxRotation: 45 } }
         }
       }
     });
   }
 
-  // Pie Chart
   const pieCtx = document.getElementById('pieChart');
   if (pieCtx) {
-    new Chart(pieCtx.getContext('2d'), {
+    state.charts.pieChart = new Chart(pieCtx.getContext('2d'), {
       type: 'doughnut',
       data: {
         labels: ['Success', 'Failed', 'Unknown'],
         datasets: [{
-          data: [68, 28, 4],
+          data: [0, 0, 0],
           backgroundColor: ['#22c55e', '#f43f5e', '#64748b'],
           borderWidth: 0
         }]
@@ -302,15 +300,12 @@ function initDashboardCharts() {
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        plugins: {
-          legend: {
-            position: 'bottom',
-            labels: { color: '#94a3b8' }
-          }
-        }
+        plugins: { legend: { position: 'bottom', labels: { color: '#94a3b8' } } }
       }
     });
   }
+  
+  updateDynamicCharts();
 }
 
 // ============ UPLOAD PAGE ============
@@ -514,25 +509,8 @@ function renderAlerts(container) {
     </div>
   `;
   container.innerHTML = html;
-  if (API.getAlerts) {
-    fetchWithFallback(function() {
-      var s = document.getElementById('alert-search');
-      var ip = document.getElementById('ip-search');
-      var sev = document.getElementById('severity-filter');
-      return API.getAlerts({
-        search: s ? s.value : '',
-        ip: ip ? ip.value : '',
-        severity: sev ? sev.value : ''
-      });
-    }, state.mockAlerts).then(function(alerts) {
-      state.mockAlerts = Array.isArray(alerts) ? alerts : state.mockAlerts;
-      var tbody = document.getElementById('alerts-tbody');
-      if (tbody) tbody.innerHTML = renderAlertsRows(state.mockAlerts);
-      initAlertsHandlers();
-    });
-  } else {
-    initAlertsHandlers();
-  }
+  // Directly initialize tables using the preserved WebSocket state
+  initAlertsHandlers();
 }
 
 function renderAlertsRows(alerts) {
@@ -693,33 +671,21 @@ function renderSuspiciousIPs(container) {
     </div>
   `;
   container.innerHTML = html;
-  if (API.getSuspiciousIPs) {
-    fetchWithFallback(API.getSuspiciousIPs, state.mockSuspiciousIPs).then(function(ips) {
-      state.mockSuspiciousIPs = Array.isArray(ips) ? ips : state.mockSuspiciousIPs;
-      var tbody = container.querySelector('.data-table tbody');
-      if (tbody) {
-        tbody.innerHTML = state.mockSuspiciousIPs.map(function(ip) {
-          var riskLevel = ip.riskLevel || 'normal';
-          return '<tr><td class="font-mono text-cyan-400">' + (ip.ip || ip) + '</td><td>' + (ip.attempts || 0) + '</td><td class="font-mono text-slate-400">' + (ip.lastSeen || '') + '</td><td><span class="px-2 py-1 rounded text-xs font-medium severity-' + riskLevel + '">' + riskLevel + '</span></td></tr>';
-        }).join('');
-      }
-      initSuspiciousIPChart(container);
-    });
-  } else {
-    initSuspiciousIPChart(container);
-  }
+  // Use preserved WebSocket state without erasing
+  initSuspiciousIPChart(container);
 }
 
 function initSuspiciousIPChart(container) {
+  if (state.charts.ipChart) state.charts.ipChart.destroy();
   var ipCtx = (container && container.querySelector) ? container.querySelector('#ipChart') : document.getElementById('ipChart');
   if (ipCtx && typeof Chart !== 'undefined') {
-    new Chart(ipCtx.getContext('2d'), {
+    state.charts.ipChart = new Chart(ipCtx.getContext('2d'), {
       type: 'bar',
       data: {
-        labels: state.mockSuspiciousIPs.map(function(ip) { return (ip.ip || '').split('.').pop() || ip.ip; }),
+        labels: [],
         datasets: [{
           label: 'Attempts',
-          data: state.mockSuspiciousIPs.map(function(ip) { return ip.attempts || 0; }),
+          data: [],
           backgroundColor: ['#f43f5e', '#f43f5e', '#f97316', '#f97316', '#22c55e']
         }]
       },
@@ -734,6 +700,7 @@ function initSuspiciousIPChart(container) {
         }
       }
     });
+    updateDynamicCharts();
   }
 }
 
@@ -984,9 +951,111 @@ async function fetchWithFallback(fn, fallback) {
   }
 }
 
+// ============ WEBSOCKET ============
+function initWebSocket() {
+  const ws = new WebSocket('ws://localhost:8080/ws/alerts');
+  
+  ws.onopen = () => {
+    console.log('Connected to backend WebSocket');
+    showNotification('Connected to live backend', 'success');
+  };
+  
+  ws.onmessage = (event) => {
+    try {
+      const bAlert = JSON.parse(event.data);
+      const severities = { 'High': 'critical', 'Medium': 'warning', 'Low': 'normal' };
+      const severity = severities[bAlert.severity] || bAlert.severity || 'normal';
+      
+      const alert = {
+        id: Date.now() + Math.random(),
+        timestamp: bAlert.timestamp || new Date().toISOString(),
+        ip: bAlert.ipAddress || 'unknown',
+        username: 'unknown',
+        eventType: bAlert.type || 'Unknown Event',
+        severity: severity,
+        status: 'Active',
+        rawLog: bAlert.description || ''
+      };
+      
+      state.mockAlerts.unshift(alert);
+      state.stats.totalAlerts++;
+      
+      const isFailed = alert.eventType.toLowerCase().includes('failed') || alert.eventType.toLowerCase().includes('brute');
+      if (isFailed) state.stats.failedLogins++;
+      
+      const ipMatch = state.mockSuspiciousIPs.find(i => i.ip === alert.ip);
+      if (ipMatch) {
+        ipMatch.attempts++;
+        ipMatch.lastSeen = alert.timestamp;
+        if (alert.severity === 'critical') ipMatch.riskLevel = 'critical';
+      } else {
+        if (alert.ip && alert.ip !== 'unknown') {
+          state.mockSuspiciousIPs.unshift({
+            ip: alert.ip,
+            attempts: 1,
+            lastSeen: alert.timestamp,
+            riskLevel: alert.severity
+          });
+          state.stats.uniqueIPs++;
+        }
+      }
+      
+      const notifLevel = alert.severity === 'critical' ? 'error' : (alert.severity === 'warning' ? 'warning' : 'info');
+      showNotification(`New Alert: ${alert.eventType} from ${alert.ip}`, notifLevel);
+      
+      if (state.currentPage === 'dashboard') {
+        const counters = document.querySelectorAll('.counter-value');
+        if (counters.length >= 4) {
+          counters[1].dataset.value = state.stats.totalAlerts;
+          counters[1].textContent = formatNumber(state.stats.totalAlerts);
+          counters[2].dataset.value = state.stats.failedLogins;
+          counters[2].textContent = formatNumber(state.stats.failedLogins);
+          counters[3].dataset.value = state.stats.uniqueIPs;
+          counters[3].textContent = formatNumber(state.stats.uniqueIPs);
+        }
+        const terminal = document.querySelector('.terminal-log');
+        if (terminal) {
+          const div = document.createElement('div');
+          div.className = 'log-line';
+          div.textContent = `[${alert.timestamp}] ${alert.eventType} - ${alert.ip}`;
+          terminal.prepend(div);
+        }
+      } else if (state.currentPage === 'alerts') {
+        const tbody = document.getElementById('alerts-tbody');
+        if (tbody) {
+          tbody.innerHTML = renderAlertsRows(state.mockAlerts);
+          initAlertsHandlers();
+        }
+      } else if (state.currentPage === 'suspicious-ips') {
+        const tbody = document.querySelector('#page-content .data-table tbody');
+        if (tbody) {
+          tbody.innerHTML = state.mockSuspiciousIPs.map(ip => `<tr><td class="font-mono text-cyan-400">${ip.ip}</td><td>${ip.attempts}</td><td class="font-mono text-slate-400">${ip.lastSeen}</td><td><span class="px-2 py-1 rounded text-xs font-medium severity-${ip.riskLevel}">${ip.riskLevel}</span></td></tr>`).join('');
+        }
+      }
+      
+      updateDynamicCharts();
+      
+      const badge = document.getElementById('notification-badge');
+      if (badge) {
+        badge.textContent = parseInt(badge.textContent || 0) + 1;
+        badge.classList.remove('hidden');
+      }
+    } catch (e) {
+      console.error('Error parsing WS message:', e);
+    }
+  };
+  
+  ws.onerror = (e) => console.error('WebSocket Error:', e);
+  ws.onclose = () => {
+    console.log('WebSocket disconnected. Reconnecting in 5s...');
+    setTimeout(initWebSocket, 5000);
+  };
+}
+
 // ============ INITIALIZATION ============
 document.addEventListener('DOMContentLoaded', () => {
   initMockData();
+  initWebSocket();
 
   // Navigation
   document.querySelectorAll('.nav-link').forEach(link => {
