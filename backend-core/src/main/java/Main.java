@@ -9,7 +9,7 @@ public class Main {
         AnomalyDetector detector = new AnomalyDetector();
         
         // Start Javalin HTTP/WS Server on port 8080
-        ApiServer apiServer = new ApiServer(8080);
+        ApiServer apiServer = new ApiServer(8080, detector);
         System.out.println("ApiServer started on http://localhost:8080");
 
         // Start background mock traffic generator
@@ -26,7 +26,7 @@ public class Main {
             LogService service = new LogService(parser);
 
             List<LogEntry> logs = service.processFile(filePath);
-            List<Alert> alerts = detector.detectAnomalies(logs);
+            List<Alert> alerts = detector.detectAnomalies(logs, 5);
 
             System.out.println("Total Logs: " + logs.size());
             System.out.println("Alerts Detected: " + alerts.size());

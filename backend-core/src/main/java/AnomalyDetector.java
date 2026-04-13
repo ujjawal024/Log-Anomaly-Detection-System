@@ -9,7 +9,7 @@ import java.util.Map;
 public class AnomalyDetector {
     private static final DateTimeFormatter TS_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
-    public List<Alert> detectAnomalies(List<LogEntry> logs) {
+    public List<Alert> detectAnomalies(List<LogEntry> logs, int bruteForceThreshold) {
         List<Alert> alerts = new ArrayList<>();
 
         // Rule 1: Failed Login Detection (Brute Force)
@@ -20,7 +20,7 @@ public class AnomalyDetector {
             }
         }
         for (Map.Entry<String, Integer> entry : failedByIp.entrySet()) {
-            if (entry.getValue() > 5) {
+            if (entry.getValue() >= bruteForceThreshold) {
                 alerts.add(new Alert(
                         "",
                         entry.getKey(),

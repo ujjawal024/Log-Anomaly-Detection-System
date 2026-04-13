@@ -15,5 +15,7 @@ contextBridge.exposeInMainWorld('API', {
   downloadReportPdf: () => ipcRenderer.invoke('download-report-pdf'),
   downloadReportCsv: () => ipcRenderer.invoke('download-report-csv'),
   getSettings: () => ipcRenderer.invoke('get-settings'),
-  saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings)
+  saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
+  blockIP: (ip) => ipcRenderer.invoke('block-ip', ip),
+  resolveAlert: (id) => ipcRenderer.invoke('resolve-alert', id)
 });

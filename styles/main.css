@@ -188,3 +188,18 @@ body {
 .toggle-switch.active::after {
   transform: translateX(24px);
 }
+
+/* Base Light Mode Hack */
+html:not(.dark) body {
+  filter: invert(1) hue-rotate(180deg);
+  background-color: #0f172a; /* Because it gets inverted to slate-100! */
+}
+
+html:not(.dark) img,
+html:not(.dark) canvas,
+html:not(.dark) svg.text-slate-300,
+html:not(.dark) .severity-critical,
+html:not(.dark) .severity-warning,
+html:not(.dark) .severity-normal {
+  filter: invert(1) hue-rotate(180deg);
+}

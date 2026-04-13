@@ -90,82 +90,33 @@ ipcMain.handle('save-blob-to-file', async (event, filePath, base64Data) => {
 
 // === New Log Anomaly IPC Handlers ===
 
-ipcMain.handle('upload-log-file', (event, filePath) => {
-  return new Promise((resolve, reject) => {
-    const backendDir = path.join(__dirname, 'backend-core', 'src');
+ipcMain.handle('upload-log-file', async (event, filePath) => {
+  try {
+    if (!fs.existsSync(filePath)) return { logsProcessed: 0, alertsDetected: 0 };
     
-    // Read recent logs for UI
-    try {
-      if (fs.existsSync(filePath)) {
-        const lines = fs.readFileSync(filePath, 'utf-8').split('\n');
-        appState.recentLogs = lines.slice(-50).map(l => l.trim()).filter(l => l);
-      }
-    } catch (e) {}
-
-    exec(`java -cp "out" Main "${filePath}"`, { cwd: backendDir }, (error, stdout, stderr) => {
-      if (error) {
-        console.error('Java Execution Error:', error);
-        // It might be compiled differently or missing, we can still attempt to read alerts.json
-      }
-      
-      try {
-        const alertsPath = path.join(backendDir, 'alerts.json');
-        if (fs.existsSync(alertsPath)) {
-          const rawAlerts = JSON.parse(fs.readFileSync(alertsPath, 'utf8'));
-          
-          let severityMap = {
-            'High': 'critical',
-            'Medium': 'warning',
-            'Low': 'normal'
-          };
-
-          // Format alerts
-          let newAlerts = rawAlerts.map((a, i) => {
-            const sev = severityMap[a.severity] || 'normal';
-            return {
-              id: Date.now() + i,
-              timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
-              ip: a.ipAddress,
-              username: 'unknown',
-              eventType: a.type,
-              severity: sev,
-              status: 'Active',
-              rawLog: `[Anomaly Detected] Type: ${a.type}, IP: ${a.ipAddress}`
-            };
-          });
-
-          // Prepend new alerts
-          appState.alerts = [...newAlerts, ...appState.alerts];
-
-          // Compute stats
-          appState.stats.totalLogs += appState.recentLogs.length > 0 ? fs.readFileSync(filePath, 'utf-8').split('\n').length : 0;
-          appState.stats.totalAlerts += newAlerts.length;
-          
-          let ipMap = {};
-          let failedCount = 0;
-          appState.alerts.forEach(a => {
-            if (a.eventType.toLowerCase().includes('brute force') || a.eventType.toLowerCase().includes('failed')) {
-              failedCount++;
-            }
-            if (!ipMap[a.ip]) {
-              ipMap[a.ip] = { ip: a.ip, attempts: 0, lastSeen: a.timestamp, riskLevel: a.severity };
-            }
-            ipMap[a.ip].attempts++;
-          });
-          
-          appState.stats.failedLogins = failedCount;
-          appState.stats.uniqueIPs = Object.keys(ipMap).length;
-          appState.suspiciousIPs = Object.values(ipMap);
-          
-          resolve({ logsProcessed: appState.stats.totalLogs, alertsDetected: newAlerts.length });
-        } else {
-          resolve({ logsProcessed: 0, alertsDetected: 0 });
-        }
-      } catch (err) {
-        reject(err.message);
-      }
+    // Read recent logs for UI preview visually
+    const lines = fs.readFileSync(filePath, 'utf-8').split('\n');
+    appState.recentLogs = lines.slice(-50).map(l => l.trim()).filter(l => l);
+    
+    const logContent = fs.readFileSync(filePath, 'utf-8');
+    
+    // Send it directly to Javalin!
+    const response = await fetch('http://localhost:8080/api/upload', {
+      method: 'POST',
+      body: logContent,
+      headers: { 'Content-Type': 'text/plain' }
     });
-  });
+    
+    if (response.ok) {
+      const result = await response.json();
+      return result; // returning { logsProcessed, alertsDetected }
+    } else {
+      console.error('Java server returned error:', response.status);
+    }
+  } catch (err) {
+    console.error('Failed to upload log file to Java server:', err);
+  }
+  return { logsProcessed: 0, alertsDetected: 0 };
 });
 
 ipcMain.handle('get-alerts', (event, filters) => {
@@ -188,6 +139,49 @@ ipcMain.handle('get-settings', () => {
   return {};
 });
 
-ipcMain.handle('save-settings', (event, settings) => {
+ipcMain.handle('save-settings', async (event, settings) => {
+  try {
+    await fetch('http://localhost:8080/api/settings', {
+      method: 'POST',
+      body: JSON.stringify(settings)
+    });
+    return { success: true };
+  } catch (e) {
+    console.error('Failed to save settings:', e);
+    return { success: false };
+  }
+});
+
+ipcMain.handle('block-ip', async (event, ip) => {
+  try {
+    await fetch('http://localhost:8080/api/block/' + encodeURIComponent(ip), { method: 'POST' });
+    return { success: true };
+  } catch (e) {
+    return { success: false };
+  }
+});
+
+ipcMain.handle('resolve-alert', async (event, id) => {
+  // Logic lives purely in frontend UI state, so backend just acknowledges
   return { success: true };
+});
+
+ipcMain.handle('download-report-pdf', async (event) => {
+  try {
+    const data = await mainWindow.webContents.printToPDF({
+      printBackground: true,
+      pageSize: 'A4',
+      marginsType: 0
+    });
+    // Tricky: we must return base64 back to preload renderer if the frontend implements the saveFileDialog step
+    return Buffer.from(data).toString('base64');
+  } catch (error) {
+    console.error('Failed to generate PDF', error);
+    return null;
+  }
+});
+
+// Mock CSV returning nothing. The frontend typically handles CSV string generation natively in app.js
+ipcMain.handle('download-report-csv', async () => {
+  return null;
 });

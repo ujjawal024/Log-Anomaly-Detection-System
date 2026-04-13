@@ -59,6 +59,7 @@ public class MockGenerator implements Runnable {
 
                 // Broadcast all raw normal traffic to the frontend
                 for (LogEntry entry : simulatedLogs) {
+                    if (apiServer.blockedIPs.contains(entry.getIpAddress())) continue;
                     Alert normalTraffic = new Alert(
                             entry.getTimestamp(),
                             entry.getIpAddress(),
@@ -70,11 +71,12 @@ public class MockGenerator implements Runnable {
                 }
 
                 // Pass generated LogEntry objects directly to the existing AnomalyDetector class
-                List<Alert> alerts = detector.detectAnomalies(simulatedLogs);
+                List<Alert> alerts = detector.detectAnomalies(simulatedLogs, apiServer.bruteForceThreshold);
 
                 // For each detected alert, trigger the broadcast
                 if (alerts != null && !alerts.isEmpty()) {
                     for (Alert alert : alerts) {
+                        if (apiServer.blockedIPs.contains(alert.getIpAddress())) continue;
                         System.out.println("[MockGenerator] Anomaly detected: " + alert.getType() + " - Broadcasting to clients.");
                         apiServer.broadcastAlert(alert);
                     }

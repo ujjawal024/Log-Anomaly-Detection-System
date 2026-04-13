@@ -11,14 +11,15 @@ const state = {
   alerts: [],
   suspiciousIPs: [],
   stats: {
-    totalLogs: 12452,
-    totalAlerts: 47,
-    failedLogins: 312,
-    uniqueIPs: 892
+    totalLogs: 0,
+    totalAlerts: 0,
+    failedLogins: 0,
+    uniqueIPs: 0
   },
   mockAlerts: [],
   mockSuspiciousIPs: [],
   uploadedFiles: [],
+  downloadHistory: [],
   charts: {}
 };
 
@@ -619,14 +620,51 @@ function openAlertModal(alert) {
   var modal = document.getElementById('alert-modal');
   var body = document.getElementById('modal-body');
   var ip = alert.ip || alert.ipAddress || '';
+  
   body.innerHTML = '<pre class="text-slate-300 whitespace-pre-wrap">Timestamp: ' + (alert.timestamp || '') +
     '\nIP Address: ' + ip +
     '\nUsername: ' + (alert.username || '') +
     '\nEvent Type: ' + (alert.eventType || '') +
     '\nSeverity: ' + (alert.severity || '') +
     '\nStatus: ' + (alert.status || 'Active') +
-    '\n\nRaw Log Entry:\n' + (alert.rawLog || ('[' + (alert.timestamp || '') + '] attempt from ' + ip)) + '</pre>';
+    '\n\nRaw Log Entry:\n' + (alert.rawLog || ('[' + (alert.timestamp || '') + '] attempt from ' + ip)) + '</pre>' +
+    '<div class="mt-6 flex gap-4 border-t border-slate-700 pt-4">' +
+    '  <button id="resolve-alert-btn" class="px-4 py-2 bg-emerald-500/20 text-emerald-400 rounded-lg hover:bg-emerald-500/30">Resolve</button>' +
+    '  <button id="block-ip-btn" class="px-4 py-2 bg-red-500/20 text-red-400 rounded-lg hover:bg-red-500/30">Block IP</button>' +
+    '</div>';
+    
   modal.classList.remove('hidden');
+
+  const resolveBtn = document.getElementById('resolve-alert-btn');
+  const blockBtn = document.getElementById('block-ip-btn');
+
+  if (resolveBtn) resolveBtn.onclick = () => {
+    alert.status = 'Resolved';
+    if (API.resolveAlert) API.resolveAlert(alert.id);
+    modal.classList.add('hidden');
+    showNotification('Alert resolved manually', 'success');
+    if (state.currentPage === 'alerts') renderAlerts(document.getElementById('page-content'));
+  };
+
+  if (blockBtn) blockBtn.onclick = () => {
+    if (API.blockIP) API.blockIP(ip);
+    alert.status = 'Resolved (Blocked)';
+    modal.classList.add('hidden');
+    showNotification('IP ' + ip + ' blocked successfully via Java firewall', 'error');
+    if (state.currentPage === 'alerts') renderAlerts(document.getElementById('page-content'));
+  };
+}
+
+function renderSuspiciousIPRows(ips) {
+  if (!ips || ips.length === 0) return '<tr><td colspan="4" class="text-center text-slate-500 py-4">No IPs found</td></tr>';
+  return ips.map(ip => `
+    <tr>
+      <td class="font-mono text-cyan-400">${ip.ip}</td>
+      <td>${ip.attempts}</td>
+      <td class="font-mono text-slate-400">${ip.lastSeen}</td>
+      <td><span class="px-2 py-1 rounded text-xs font-medium severity-${ip.riskLevel}">${ip.riskLevel}</span></td>
+    </tr>
+  `).join('');
 }
 
 // ============ SUSPICIOUS IPS ============
@@ -636,7 +674,10 @@ function renderSuspiciousIPs(container) {
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div class="lg:col-span-2 bg-slate-800/50 rounded-xl border border-slate-700/50 overflow-hidden">
           <div class="p-4 border-b border-slate-700">
-            <h3 class="font-semibold text-slate-100">Suspicious IP Addresses</h3>
+            <div class="flex items-center justify-between">
+              <h3 class="font-semibold text-slate-100">Suspicious IP Addresses</h3>
+              <input type="text" id="suspicious-ip-search" placeholder="Filter IPs..." class="px-3 py-1.5 bg-slate-700/50 border border-slate-600 rounded text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500 w-48 text-slate-200">
+            </div>
           </div>
           <div class="overflow-x-auto">
             <table class="data-table">
@@ -648,15 +689,8 @@ function renderSuspiciousIPs(container) {
                   <th>Risk Level</th>
                 </tr>
               </thead>
-              <tbody>
-                ${state.mockSuspiciousIPs.map(ip => `
-                  <tr>
-                    <td class="font-mono text-cyan-400">${ip.ip}</td>
-                    <td>${ip.attempts}</td>
-                    <td class="font-mono text-slate-400">${ip.lastSeen}</td>
-                    <td><span class="px-2 py-1 rounded text-xs font-medium severity-${ip.riskLevel}">${ip.riskLevel}</span></td>
-                  </tr>
-                `).join('')}
+              <tbody id="suspicious-ips-tbody">
+                ${renderSuspiciousIPRows(state.mockSuspiciousIPs)}
               </tbody>
             </table>
           </div>
@@ -671,6 +705,19 @@ function renderSuspiciousIPs(container) {
     </div>
   `;
   container.innerHTML = html;
+  
+  const searchInput = document.getElementById('suspicious-ip-search');
+  if (searchInput) {
+    searchInput.addEventListener('input', () => {
+      const term = searchInput.value.trim().toLowerCase();
+      const tbody = document.getElementById('suspicious-ips-tbody');
+      if (tbody) {
+        const filtered = state.mockSuspiciousIPs.filter(ip => ip.ip.toLowerCase().indexOf(term) >= 0);
+        tbody.innerHTML = renderSuspiciousIPRows(filtered);
+      }
+    });
+  }
+
   // Use preserved WebSocket state without erasing
   initSuspiciousIPChart(container);
 }
@@ -738,14 +785,13 @@ function renderReports(container) {
       <div class="bg-slate-800/50 rounded-xl border border-slate-700/50 p-6">
         <h3 class="font-semibold text-slate-100 mb-4">Download History</h3>
         <div class="space-y-2">
+          ${state.downloadHistory.length === 0 ? '<div class="text-slate-500 text-sm italic">No downloads yet.</div>' : ''}
+          ${state.downloadHistory.map(item => `
           <div class="flex items-center justify-between p-3 bg-slate-800 rounded-lg">
-            <span class="font-mono text-sm text-slate-300">report_2025-03-03.pdf</span>
-            <span class="text-xs text-slate-500">2 hours ago</span>
+            <span class="font-mono text-sm text-slate-300">${item.filename}</span>
+            <span class="text-xs text-slate-500">${item.time}</span>
           </div>
-          <div class="flex items-center justify-between p-3 bg-slate-800 rounded-lg">
-            <span class="font-mono text-sm text-slate-300">alerts_export.csv</span>
-            <span class="text-xs text-slate-500">5 hours ago</span>
-          </div>
+          `).join('')}
         </div>
       </div>
     </div>
@@ -755,27 +801,38 @@ function renderReports(container) {
   document.getElementById('export-pdf').addEventListener('click', async function() {
     try {
       if (API.downloadReportPdf) {
-        var blob = await API.downloadReportPdf();
-        var reader = new FileReader();
-        reader.onload = function() {
-          var base64 = reader.result.split(',')[1];
-          if (window.electronAPI && window.electronAPI.saveFileDialog) {
-            window.electronAPI.saveFileDialog('report.pdf').then(function(r) {
-              if (!r.canceled && r.filePath && window.electronAPI.saveBlobToFile) {
-                window.electronAPI.saveBlobToFile(r.filePath, base64).then(function(res) {
-                  showNotification(res.success ? 'PDF saved successfully!' : 'Save failed', res.success ? 'success' : 'error');
-                });
-              }
-            });
-          } else {
-            var a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = 'report.pdf';
-            a.click();
-            showNotification('PDF downloaded', 'success');
+        var base64 = await API.downloadReportPdf();
+        if (!base64 || typeof base64 !== 'string') throw new Error("Failed to capture PDF layout");
+        
+        if (window.electronAPI && window.electronAPI.saveFileDialog) {
+          window.electronAPI.saveFileDialog('report.pdf').then(function(r) {
+            if (!r.canceled && r.filePath && window.electronAPI.saveBlobToFile) {
+              window.electronAPI.saveBlobToFile(r.filePath, base64).then(function(res) {
+                showNotification(res.success ? 'PDF saved successfully!' : 'Save failed', res.success ? 'success' : 'error');
+                if (res.success) {
+                  state.downloadHistory.unshift({ filename: r.filePath.split(/[\\\\/]/).pop(), time: new Date().toLocaleTimeString() });
+                  if (state.currentPage === 'reports') renderReports(document.getElementById('page-content'));
+                }
+              });
+            }
+          });
+        } else {
+          // Native browser fallback for web mode
+          var byteCharacters = atob(base64);
+          var byteNumbers = new Array(byteCharacters.length);
+          for (let i = 0; i < byteCharacters.length; i++) {
+              byteNumbers[i] = byteCharacters.charCodeAt(i);
           }
-        };
-        reader.readAsDataURL(blob);
+          var byteArray = new Uint8Array(byteNumbers);
+          var blob = new Blob([byteArray], {type: 'application/pdf'});
+          var a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = 'report.pdf';
+          a.click();
+          showNotification('PDF downloaded natively', 'success');
+          state.downloadHistory.unshift({ filename: 'report.pdf', time: new Date().toLocaleTimeString() });
+          if (state.currentPage === 'reports') renderReports(document.getElementById('page-content'));
+        }
       } else if (window.electronAPI && window.electronAPI.saveFileDialog) {
         window.electronAPI.saveFileDialog('report.pdf').then(function(r) {
           if (!r.canceled) showNotification('Backend not connected - save dialog opened', 'info');
@@ -788,32 +845,36 @@ function renderReports(container) {
 
   document.getElementById('export-csv').addEventListener('click', async function() {
     try {
-      if (API.downloadReportCsv) {
-        var blob = await API.downloadReportCsv();
-        var reader = new FileReader();
-        reader.onload = function() {
-          var base64 = reader.result.split(',')[1];
-          if (window.electronAPI && window.electronAPI.saveFileDialog) {
-            window.electronAPI.saveFileDialog('alerts_export.csv').then(function(r) {
-              if (!r.canceled && r.filePath && window.electronAPI.saveBlobToFile) {
-                window.electronAPI.saveBlobToFile(r.filePath, base64).then(function(res) {
-                  showNotification(res.success ? 'CSV saved successfully!' : 'Save failed', res.success ? 'success' : 'error');
-                });
-              }
-            });
-          } else {
-            var a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = 'alerts_export.csv';
-            a.click();
-            showNotification('CSV downloaded', 'success');
-          }
-        };
-        reader.readAsDataURL(blob);
-      } else if (window.electronAPI && window.electronAPI.saveFileDialog) {
-        window.electronAPI.saveFileDialog('alerts_export.csv').then(function(r) {
-          if (!r.canceled) showNotification('Backend not connected', 'info');
-        });
+      const rows = [['Timestamp', 'IP', 'Event Type', 'Severity', 'Status']];
+      state.mockAlerts.forEach(a => rows.push([a.timestamp, a.ip, a.eventType, a.severity, a.status]));
+      const csvStr = rows.map(r => r.join(',')).join('\\n');
+      const blob = new Blob([csvStr], { type: 'text/csv;charset=utf-8;' });
+      
+      if (window.electronAPI && window.electronAPI.saveFileDialog) {
+         var reader = new FileReader();
+         reader.onload = function() {
+           var base64 = reader.result.split(',')[1];
+           window.electronAPI.saveFileDialog('alerts_export.csv').then(function(r) {
+             if (!r.canceled && r.filePath && window.electronAPI.saveBlobToFile) {
+               window.electronAPI.saveBlobToFile(r.filePath, base64).then(function(res) {
+                 showNotification(res.success ? 'CSV saved successfully!' : 'Save failed', res.success ? 'success' : 'error');
+                 if (res.success) {
+                   state.downloadHistory.unshift({ filename: r.filePath.split(/[\\\\/]/).pop(), time: new Date().toLocaleTimeString() });
+                   if (state.currentPage === 'reports') renderReports(document.getElementById('page-content'));
+                 }
+               });
+             }
+           });
+         };
+         reader.readAsDataURL(blob);
+      } else {
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'alerts_export.csv';
+        a.click();
+        showNotification('CSV downloaded natively', 'success');
+        state.downloadHistory.unshift({ filename: 'alerts_export.csv', time: new Date().toLocaleTimeString() });
+        if (state.currentPage === 'reports') renderReports(document.getElementById('page-content'));
       }
     } catch (err) {
       showNotification('CSV export failed: ' + err.message, 'error');
@@ -857,44 +918,39 @@ function renderSettings(container) {
         </div>
       </div>
 
-      <div class="bg-slate-800/50 rounded-xl border border-slate-700/50 p-6">
-        <div class="flex items-center justify-between">
-          <div>
-            <h3 class="font-semibold text-slate-100">Dark Mode</h3>
-            <p class="text-sm text-slate-400">Toggle between dark and light themes</p>
-          </div>
-          <div id="theme-toggle" class="toggle-switch active"></div>
-        </div>
-      </div>
+    </div>
     </div>
   `;
   container.innerHTML = html;
+
+  const performSave = function() {
+    var inputs = document.querySelectorAll('.settings-page input[type="number"]');
+    var bf = document.querySelector('[data-rule="brute-force"]');
+    var ps = document.querySelector('[data-rule="port-scan"]');
+    var pe = document.querySelector('[data-rule="priv-escalation"]');
+    var s = {
+      bruteForceThreshold: parseInt((inputs[0] && inputs[0].value) || 5, 10),
+      timeWindowMinutes: parseInt((inputs[1] && inputs[1].value) || 15, 10),
+      bruteForceEnabled: bf ? bf.classList.contains('active') : true,
+      portScanEnabled: ps ? ps.classList.contains('active') : true,
+      privilegeEscalationEnabled: pe ? pe.classList.contains('active') : true
+    };
+    if (API.saveSettings) {
+      API.saveSettings(s).then(function() { showNotification('Settings saved & propagated to Java!', 'success'); }).catch(function() {});
+    }
+  };
 
   document.querySelectorAll('.toggle-switch').forEach(function(toggle) {
     var parent = toggle.closest('label') || toggle.parentElement;
     (parent || toggle).addEventListener('click', function(e) {
       if (e.target.tagName === 'INPUT') return;
       toggle.classList.toggle('active');
-      if (toggle.id === 'theme-toggle') {
-        var isDark = toggle.classList.contains('active');
-        document.documentElement.classList.toggle('dark', isDark);
-        state.theme = isDark ? 'dark' : 'light';
-        showNotification(isDark ? 'Dark mode enabled' : 'Light mode enabled', 'info');
-      } else if (toggle.dataset.rule && API.saveSettings) {
-        var inputs = document.querySelectorAll('.settings-page input[type="number"]');
-        var bf = document.querySelector('[data-rule="brute-force"]');
-        var ps = document.querySelector('[data-rule="port-scan"]');
-        var pe = document.querySelector('[data-rule="priv-escalation"]');
-        var s = {
-          failedLoginThreshold: parseInt((inputs[0] && inputs[0].value) || 5, 10),
-          timeWindowMinutes: parseInt((inputs[1] && inputs[1].value) || 15, 10),
-          bruteForceEnabled: bf ? bf.classList.contains('active') : true,
-          portScanEnabled: ps ? ps.classList.contains('active') : true,
-          privilegeEscalationEnabled: pe ? pe.classList.contains('active') : true
-        };
-        API.saveSettings(s).then(function() { showNotification('Settings saved', 'success'); }).catch(function() {});
-      }
+      performSave();
     });
+  });
+
+  document.querySelectorAll('.settings-page input[type="number"]').forEach(function(input) {
+    input.addEventListener('change', performSave);
   });
   if (API.getSettings) {
     fetchWithFallback(API.getSettings, function() { return {}; }).then(function(s) {
@@ -1001,7 +1057,14 @@ function initWebSocket() {
       }
       
       const notifLevel = alert.severity === 'critical' ? 'error' : (alert.severity === 'warning' ? 'warning' : 'info');
-      showNotification(`New Alert: ${alert.eventType} from ${alert.ip}`, notifLevel);
+      if (alert.severity === 'critical' || alert.severity === 'warning') {
+        showNotification(`New Alert: ${alert.eventType} from ${alert.ip}`, notifLevel);
+        const badge = document.getElementById('notification-badge');
+        if (badge) {
+          badge.textContent = parseInt(badge.textContent || 0) + 1;
+          badge.classList.remove('hidden');
+        }
+      }
       
       if (state.currentPage === 'dashboard') {
         const counters = document.querySelectorAll('.counter-value');
@@ -1021,25 +1084,21 @@ function initWebSocket() {
           terminal.prepend(div);
         }
       } else if (state.currentPage === 'alerts') {
-        const tbody = document.getElementById('alerts-tbody');
-        if (tbody) {
-          tbody.innerHTML = renderAlertsRows(state.mockAlerts);
-          initAlertsHandlers();
+        const searchBox = document.getElementById('alert-search');
+        if (searchBox) {
+          // Simply trigger the existing filter logic which will safely redraw and re-bind rows
+          searchBox.dispatchEvent(new Event('input'));
         }
       } else if (state.currentPage === 'suspicious-ips') {
-        const tbody = document.querySelector('#page-content .data-table tbody');
-        if (tbody) {
-          tbody.innerHTML = state.mockSuspiciousIPs.map(ip => `<tr><td class="font-mono text-cyan-400">${ip.ip}</td><td>${ip.attempts}</td><td class="font-mono text-slate-400">${ip.lastSeen}</td><td><span class="px-2 py-1 rounded text-xs font-medium severity-${ip.riskLevel}">${ip.riskLevel}</span></td></tr>`).join('');
+        const searchInput = document.getElementById('suspicious-ip-search');
+        if (searchInput) {
+          searchInput.dispatchEvent(new Event('input'));
         }
       }
       
       updateDynamicCharts();
       
-      const badge = document.getElementById('notification-badge');
-      if (badge) {
-        badge.textContent = parseInt(badge.textContent || 0) + 1;
-        badge.classList.remove('hidden');
-      }
+      // Badge logic was moved to early breakout logic
     } catch (e) {
       console.error('Error parsing WS message:', e);
     }
@@ -1065,6 +1124,16 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  // Global theme toggle
+  const themeToggleGlobal = document.getElementById('theme-toggle-global');
+  if (themeToggleGlobal) {
+    themeToggleGlobal.addEventListener('click', () => {
+      document.documentElement.classList.toggle('dark');
+      state.theme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+      showNotification(state.theme === 'dark' ? 'Dark mode enabled' : 'Light mode enabled', 'info');
+    });
+  }
+
   // Sidebar toggle
   document.getElementById('sidebar-toggle').addEventListener('click', () => {
     document.getElementById('sidebar').classList.toggle('collapsed');
@@ -1072,6 +1141,16 @@ document.addEventListener('DOMContentLoaded', () => {
     icon.innerHTML = document.getElementById('sidebar').classList.contains('collapsed')
       ? '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 5l7 7-7 7"/>'
       : '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 19l-7-7 7-7m8 14l-7-7 7-7"/>';
+  });
+
+  // Reset notification badge
+  document.getElementById('notification-btn').addEventListener('click', () => {
+    const badge = document.getElementById('notification-badge');
+    if (badge) {
+      badge.textContent = '';
+      badge.classList.add('hidden');
+    }
+    navigateTo('alerts');
   });
 
   // Modal close
@@ -1094,20 +1173,7 @@ document.addEventListener('DOMContentLoaded', () => {
     showNotification('New critical alert: Failed login from 192.168.1.105', 'warning');
   }, 3000);
 
-  // Global search
-  const globalSearch = document.getElementById('global-search');
-  if (globalSearch) {
-    globalSearch.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter' && globalSearch.value.trim()) {
-        state.searchQuery = globalSearch.value.trim();
-        if (state.currentPage === 'alerts') {
-          document.getElementById('alert-search').value = state.searchQuery;
-          document.getElementById('alert-search').dispatchEvent(new Event('input'));
-        }
-        navigateTo('alerts');
-      }
-    });
-  }
+  // Global search removed - using isolated search inputs per page.
 
   // Show notification badge
   const badge = document.getElementById('notification-badge');
