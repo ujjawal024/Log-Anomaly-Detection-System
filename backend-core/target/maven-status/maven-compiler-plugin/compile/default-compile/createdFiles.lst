@@ -1,9 +1,0 @@
-Main.class
-MockGenerator.class
-AnomalyDetector.class
-TestParser.class
-ApiServer.class
-LogParser.class
-LogEntry.class
-LogService.class
-Alert.class
