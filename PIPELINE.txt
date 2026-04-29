@@ -1,0 +1,469 @@
+================================================================================
+       LOG ANOMALY DETECTION SYSTEM (LADS)
+       WORKING PIPELINE — DATA FLOW REFERENCE
+================================================================================
+Version : 1.0.0
+Author  : UJJAWAL
+Date    : 2026-04-28
+================================================================================
+
+
+--------------------------------------------------------------------------------
+PIPELINE A — APP STARTUP
+--------------------------------------------------------------------------------
+
+1. User double-clicks the .exe
+   |
+2. Electron main process starts (main.js)
+   |
+3. main.js calls startJavaBackend()
+   |
+   |-- Resolves JAR path:
+   |     Development:  backend-core/target/backend-core-fat.jar
+   |     Production:   <appDir>/resources/backend-core-fat.jar
+   |
+   |-- If JAR not found:
+   |     Shows error dialog: "Backend Not Found"
+   |     Instructs user to run: mvn package
+   |
+   +-- Spawns child process: java -jar <jarPath>
+         stdout/stderr piped to Electron console
+
+4. Java process boots:
+   |
+   |-- AnomalyDetector instantiated
+   |
+   |-- ApiServer.init(port=8080, detector):
+   |     Javalin.create() with CORS enabled (anyHost)
+   |     Registers REST routes:
+   |       GET  /api/alerts
+   |       POST /api/upload
+   |       POST /api/block/{ip}
+   |       POST /api/settings
+   |     Registers WebSocket: /ws/alerts
+   |     Javalin.start(8080)
+   |
+   +-- MockGenerator thread started as daemon thread
+
+5. After 1500ms delay, Electron opens BrowserWindow
+   |-- width: 1400, height: 900
+   |-- backgroundColor: #0f172a (prevents white flash)
+   |-- show: false until ready-to-show fires
+   +-- Loads index.html from disk
+
+6. Browser renderer (app.js) DOMContentLoaded fires:
+   |-- initMockData()     Seeds 8 hardcoded demo alerts + 5 suspicious IPs
+   |-- initWebSocket()    Connects ws://localhost:8080/ws/alerts
+   |-- Event listeners    Nav links, sidebar toggle, modal, theme toggle, time
+   +-- navigateTo('dashboard')   Renders initial dashboard page
+
+
+--------------------------------------------------------------------------------
+PIPELINE B — REAL-TIME MOCK TRAFFIC (every 3 seconds)
+--------------------------------------------------------------------------------
+
+MockGenerator.run() — infinite loop with Thread.sleep(3000):
+   |
+   |-- Generate random int 0-99
+   |
+   |-- If value < 90 (90% probability — Normal Traffic):
+   |     Pick random IP from pool:  192.168.1.100, 10.0.0.45, 172.16.0.8, 203.0.113.55
+   |     Pick random user from:     admin, system, guest, db_service
+   |     Create: LogEntry(ts, ip, user, "LOGIN", "SUCCESS")
+   |     Create 0-2 more: LogEntry(ts, randIP, randUser, "FILE_ACCESS", "SUCCESS")
+   |
+   +-- If value >= 90 (10% probability — Brute Force Simulation):
+         Attack IP: 192.168.1.(200-254) randomly chosen
+         Attack user: "root"
+         Create 6x: LogEntry(ts, attackIP, "root", "LOGIN", "FAILED")
+
+   For every LogEntry in the batch:
+   |-- if apiServer.blockedIPs.contains(entry.ip) -> SKIP
+   +-- Wrap as Alert:
+         timestamp   = entry.timestamp
+         ipAddress   = entry.ipAddress
+         type        = entry.eventType + " (" + entry.status + ")"
+         severity    = "Normal"
+         description = "User: X performed Y"
+       broadcastAlert(normalAlert)
+
+   Pass all LogEntries to AnomalyDetector.detectAnomalies(logs, threshold):
+   |
+   |-- Rule 1 — Brute Force:
+   |     Count FAILED LOGIN events per IP address (HashMap)
+   |     If count >= bruteForceThreshold:
+   |       Create Alert(timestamp=now, ip, "Brute Force", "High",
+   |                    "Multiple failed login attempts (N)")
+   |
+   |-- Rule 2 — High Activity:
+   |     Count ALL entries per IP address (HashMap)
+   |     If count > 10:
+   |       Create Alert(timestamp=now, ip, "Suspicious Activity", "Medium",
+   |                    "High activity from IP (N log entries)")
+   |
+   +-- Rule 3 — Unusual Login Time:
+         For each LOGIN entry:
+         Parse timestamp -> extract hour (0-23)
+         If hour >= 0 AND hour <= 5:
+           Create Alert(timestamp=entry.ts, ip, "Unusual Login Time", "Low",
+                        "Login activity detected during unusual hours (00:00-05:00)")
+
+   For each detected Alert:
+   |-- if blockedIPs.contains(alert.ip) -> SKIP
+   +-- broadcastAlert(alert)
+
+   broadcastAlert(alert):
+   |-- if activeSessions is empty -> return (no clients)
+   |-- mapper.writeValueAsString(alert) -> JSON string
+   +-- For each WsContext in activeSessions:
+         if session.isOpen() -> session.send(jsonString)
+
+
+--------------------------------------------------------------------------------
+PIPELINE C — WEBSOCKET MESSAGE RECEIVED (FRONTEND)
+--------------------------------------------------------------------------------
+
+ws.onmessage(event):
+   |
+   Parse: bAlert = JSON.parse(event.data)
+   Fields: { timestamp, ipAddress, type, severity, description }
+   |
+   Map severity string:
+     "High"   -> "critical"
+     "Medium" -> "warning"
+     "Low"    -> "normal"
+     "Normal" -> "normal"
+     other    -> raw value or "normal"
+   |
+   Build frontend alert object:
+   {
+     id:        Date.now() + Math.random()
+     timestamp: bAlert.timestamp || new Date().toISOString()
+     ip:        bAlert.ipAddress || 'unknown'
+     username:  'unknown'
+     eventType: bAlert.type || 'Unknown Event'
+     severity:  mapped severity string
+     status:    'Active'
+     rawLog:    bAlert.description || ''
+   }
+   |
+   state.mockAlerts.unshift(alert)    <- add to front (newest first)
+   state.stats.totalAlerts++
+   |
+   |-- If eventType contains "failed" or "brute" (case-insensitive):
+   |     state.stats.failedLogins++
+   |
+   |-- Search state.mockSuspiciousIPs for matching IP:
+   |     FOUND:
+   |       ipMatch.attempts++
+   |       ipMatch.lastSeen = alert.timestamp
+   |       if alert.severity === 'critical': ipMatch.riskLevel = 'critical'
+   |     NOT FOUND (and ip !== 'unknown'):
+   |       state.mockSuspiciousIPs.unshift({
+   |         ip: alert.ip, attempts: 1,
+   |         lastSeen: alert.timestamp, riskLevel: alert.severity
+   |       })
+   |       state.stats.uniqueIPs++
+   |
+   |-- If severity is 'critical' or 'warning':
+   |     showNotification("New Alert: X from Y", 'error' or 'warning')
+   |     notification badge count++, badge becomes visible
+   |
+   +-- Live UI update based on state.currentPage:
+         'dashboard'     -> Update counter DOM elements
+                           Prepend new line to terminal-log div
+         'alerts'        -> searchBox.dispatchEvent('input') -> re-filter + redraw
+         'suspicious-ips'-> searchInput.dispatchEvent('input') -> re-filter + redraw
+         ALL pages       -> updateDynamicCharts()
+                             Line chart: shift oldest point, push new total
+                             Bar chart: update event type counts
+                             Doughnut: recalculate critical/warning/normal ratios
+
+
+--------------------------------------------------------------------------------
+PIPELINE D — LOG FILE UPLOAD
+--------------------------------------------------------------------------------
+
+User drags a file onto the upload zone OR clicks Browse:
+   |
+app.js:
+   |-- Drag: ondrop event -> e.dataTransfer.files[0]
+   +-- Browse: electronAPI.openFileDialog() -> IPC -> dialog.showOpenDialog()
+
+app.js -> API.uploadLogFile(file)
+   |
+preload.js -> ipcRenderer.invoke('upload-log-file', file.path)
+   |
+main.js handler:
+   |-- fs.existsSync(filePath) -> return 0,0 if missing
+   |-- fs.readFileSync(filePath, 'utf-8') -> logContent string
+   |-- appState.recentLogs = last 50 lines (for get-recent-logs IPC)
+   +-- fetch POST http://localhost:8080/api/upload
+         body: logContent (raw text)
+         Content-Type: text/plain
+
+ApiServer /api/upload handler:
+   |-- ctx.body() -> raw text
+   |-- Split by \r?\n into lines array
+   |-- new LogParser()
+   |-- For each line:
+   |     entry = parser.parseLine(line)
+   |     if entry == null -> skip
+   |     if blockedIPs.contains(entry.ip) -> skip
+   |     newLogs.add(entry)
+   |     broadcastAlert(normalTrafficAlert)
+   |
+   |-- detector.detectAnomalies(newLogs, bruteForceThreshold)
+   |-- For each alert:
+   |     if blockedIPs.contains(alert.ip) -> skip
+   |     broadcastAlert(alert)
+   |
+   +-- ctx.json({ logsProcessed: N, alertsDetected: M })
+
+Frontend:
+   +-- Displays result card: "X logs processed, Y anomalies detected"
+       state.stats.totalLogs += logsProcessed
+       Navigates to Alerts page after 2s delay
+
+
+--------------------------------------------------------------------------------
+PIPELINE E — IP BLOCKING
+--------------------------------------------------------------------------------
+
+User clicks "Block IP" in the alert detail modal:
+   |
+app.js:
+   |-- Find alert in state.mockAlerts by id
+   |-- alert.status = 'Resolved (Blocked)'
+   |-- API.blockIP(alert.ip)
+   |
+preload.js -> ipcRenderer.invoke('block-ip', ip)
+   |
+main.js -> fetch POST http://localhost:8080/api/block/{encodedIP}
+   |
+ApiServer /api/block/{ip}:
+   |-- blockedIPs.add(ip)   (ConcurrentHashMap-backed Set, thread-safe)
+   +-- Logs: "[Firewall] IP Blocked: x.x.x.x"
+       Returns { "success": true }
+
+Future effect:
+   MockGenerator loop:
+     if (apiServer.blockedIPs.contains(entry.ip)) continue;
+
+   /api/upload handler:
+     if (!blockedIPs.contains(entry.getIpAddress())) -> only then process
+
+
+--------------------------------------------------------------------------------
+PIPELINE F — PDF REPORT GENERATION
+--------------------------------------------------------------------------------
+
+User clicks "Generate PDF Report":
+   |
+app.js -> buildReportHtml():
+   |
+   |-- Reads from state:
+   |     state.mockAlerts, state.stats, state.mockSuspiciousIPs
+   |
+   |-- Calculates:
+   |     criticalCount = alerts where severity === 'critical'
+   |     warningCount  = alerts where severity === 'warning'
+   |     resolvedCount = alerts where status contains 'Resolved'
+   |
+   |-- Generates complete HTML document (self-contained, inline CSS only):
+   |
+   |   PAGE 1 — COVER:
+   |     Dark gradient background (navy #0f172a -> teal #0e7490)
+   |     LADS logo + shield SVG icon
+   |     4 live stat boxes (Total Logs, Alerts, Critical, Unique IPs)
+   |     Generated date/time + "INTERNAL USE ONLY" classification
+   |
+   |   PAGE 2 — EXECUTIVE SUMMARY:
+   |     8 color-coded stat cards in 2 rows of 4
+   |     Written analysis paragraph with embedded live numbers
+   |     Bullet point threat recommendations
+   |     Page header with brand + date
+   |
+   |   PAGE 3 — DATA TABLES:
+   |     Top 50 alerts table:
+   |       Timestamp | IP Address | Username | Event Type | Severity | Status
+   |       Severity shown as color-coded pill badge
+   |     Top 20 suspicious IPs table:
+   |       IP Address | Attempts | Last Seen | Risk Level
+   |     Page footer: "Page 2 of 2 · CONFIDENTIAL"
+   |
+   +-- Returns full HTML string
+
+app.js -> window.electronAPI.printReportHtml(htmlString)
+   |
+preload.js -> ipcRenderer.invoke('print-report-html', html)
+   |
+main.js 'print-report-html' handler:
+   |-- new BrowserWindow({ show: false, width: 1200, height: 900 })
+   |-- reportWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+   |-- Wait for 'did-finish-load' event
+   |-- setTimeout 800ms   <- wait for Google Fonts to render
+   |-- reportWin.webContents.printToPDF({
+   |     printBackground: true,
+   |     pageSize: 'A4',
+   |     marginsType: 1,
+   |     landscape: false
+   |   })
+   |-- resolve(Buffer.from(pdfData).toString('base64'))
+   +-- reportWin.destroy()
+
+app.js:
+   |-- electronAPI.saveFileDialog('LADS_Report_YYYY-MM-DD.pdf')
+   |-- if not canceled:
+   |     electronAPI.saveBlobToFile(filePath, base64PDF)
+   |     showNotification('Report PDF saved!', 'success')
+   +-- state.downloadHistory.unshift({ filename, time })
+
+
+--------------------------------------------------------------------------------
+PIPELINE G — CSV EXPORT
+--------------------------------------------------------------------------------
+
+User clicks "Export CSV":
+   |
+app.js:
+   |
+   |-- csvEscape(val) helper function:
+   |     Returns: '"' + String(val ?? '').replace(/"/g, '""') + '"'
+   |     Example: O'Brien         -> "O'Brien"
+   |     Example: Has "quotes"    -> "Has ""quotes"""
+   |     Example: A, B            -> "A, B"
+   |
+   |-- Build rows array:
+   |     Row 0 (header): ['Timestamp', 'IP', 'Event Type', 'Severity', 'Status']
+   |     Rows 1-N: one per alert in state.mockAlerts
+   |       [a.timestamp, a.ip, a.eventType, a.severity, a.status]
+   |
+   |-- csvStr = rows.map(r => r.map(csvEscape).join(',')).join('\n')
+   |     (real newline character, NOT literal \n text)
+   |
+   +-- new Blob([csvStr], { type: 'text/csv;charset=utf-8;' })
+
+Electron path:
+   |-- FileReader.readAsDataURL(blob) -> base64 data URL
+   |-- Split off base64 portion after comma
+   |-- electronAPI.saveFileDialog('alerts_export.csv')
+   |-- if not canceled:
+   |     electronAPI.saveBlobToFile(filePath, base64)
+   +-- showNotification('CSV saved successfully!', 'success')
+
+Browser fallback path (non-Electron environment):
+   |-- URL.createObjectURL(blob) -> object URL
+   |-- Create <a> element, set href + download attribute
+   +-- Programmatically click it -> browser download dialog
+
+
+--------------------------------------------------------------------------------
+PIPELINE H — SETTINGS SYNC TO JAVA
+--------------------------------------------------------------------------------
+
+User changes a value in Settings page:
+   |
+   |-- Numeric inputs: fire 'change' event -> performSave()
+   +-- Toggle switches: fire 'click' event -> toggle 'active' class -> performSave()
+
+performSave():
+   |-- Read all input values from DOM
+   |-- Build settings object:
+   |     {
+   |       bruteForceThreshold: int (default 5),
+   |       timeWindowMinutes:   int (default 15),
+   |       bruteForceEnabled:   bool,
+   |       portScanEnabled:     bool,
+   |       privilegeEscalationEnabled: bool
+   |     }
+   |
+   +-- API.saveSettings(settings)
+             |
+   preload.js -> ipcRenderer.invoke('save-settings', settings)
+             |
+   main.js -> fetch POST http://localhost:8080/api/settings
+                     body: JSON.stringify(settings)
+             |
+   ApiServer /api/settings:
+   |-- Parse body string manually for "bruteForceThreshold" key
+   |-- Extract numeric value using regex [^0-9]
+   |-- apiServer.bruteForceThreshold = parsed int
+   +-- Next detectAnomalies() call uses the new threshold
+
+
+--------------------------------------------------------------------------------
+PIPELINE I — APP SHUTDOWN
+--------------------------------------------------------------------------------
+
+User clicks the X button on the window:
+   |
+Electron 'window-all-closed' event fires
+   +-- app.quit() called (on non-macOS)
+
+Electron 'will-quit' event fires (before quit completes):
+   +-- stopJavaBackend():
+         if (javaProcess != null):
+           javaProcess.kill('SIGTERM')
+           javaProcess = null
+
+Java JVM receives SIGTERM signal:
+   |-- Javalin stops Jetty server
+   |-- All active WebSocket sessions closed
+   |-- Port 8080 freed
+   +-- JVM exits cleanly
+
+Result: No zombie Java process left running in Task Manager.
+
+
+--------------------------------------------------------------------------------
+PIPELINE J — REPORT HTML BUILDER (buildReportHtml detail)
+--------------------------------------------------------------------------------
+
+buildReportHtml() constructs a complete self-contained HTML document:
+
+DATA COLLECTED:
+  now             = new Date()
+  dateStr         = locale-formatted date (e.g. "28 April 2026")
+  timeStr         = locale-formatted time (e.g. "01:06 AM")
+  criticalCount   = state.mockAlerts.filter(severity === 'critical').length
+  warningCount    = state.mockAlerts.filter(severity === 'warning').length
+  resolvedCount   = state.mockAlerts.filter(status contains 'Resolved').length
+
+TABLE ROWS (generated dynamically):
+  alertRows: top 50 alerts from state.mockAlerts
+    Each row: <tr> with td for each field
+    Severity td contains a <span> with inline color style:
+      critical -> red background + dark red text
+      warning  -> amber background + dark amber text
+      normal   -> green background + dark green text
+
+  ipRows: top 20 IPs from state.mockSuspiciousIPs
+    Each row: <tr> with IP, attempts, lastSeen, riskLevel badge
+
+DOCUMENT STRUCTURE:
+  <!DOCTYPE html>
+  <html>
+  <head>
+    @import Google Fonts (Inter)
+    <style> all layout CSS inline — no external dependencies </style>
+  </head>
+  <body>
+    <!-- Cover Page div.cover -->
+    <!-- Executive Summary div.page -->
+    <!-- Alerts + IPs div.page -->
+  </body>
+  </html>
+
+CSS FEATURES USED:
+  @page { size: A4; margin: 0; }
+  page-break-after: always  (between pages)
+  print-color-adjust: exact (ensures backgrounds print)
+  CSS Grid for stat cards
+  Flexbox for cover layout
+  Inline color styles on severity badges
+
+
+================================================================================
+END OF PIPELINE DOCUMENT
+================================================================================

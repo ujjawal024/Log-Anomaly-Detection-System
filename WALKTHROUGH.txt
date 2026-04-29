@@ -1,0 +1,291 @@
+================================================================================
+       LOG ANOMALY DETECTION SYSTEM (LADS)
+       PROJECT WALKTHROUGH
+================================================================================
+
+
+--------------------------------------------------------------------------------
+1. WHAT IS LADS?
+--------------------------------------------------------------------------------
+
+LADS (Log Anomaly Detection System) is a Security Operations Center (SOC) style
+desktop application. It monitors system logs in real-time, detects security
+anomalies, and displays them on a live dashboard.
+
+It is packaged as a standalone Windows .exe that auto-starts both the Electron
+frontend and the Java backend — no terminal or Maven required to run.
+
+
+--------------------------------------------------------------------------------
+2. TECHNOLOGY STACK
+--------------------------------------------------------------------------------
+
+LAYER               TECHNOLOGY                  PURPOSE
+---------------------------------------------------------------------------
+Desktop Shell       Electron v28                Native Windows app wrapper
+Frontend UI         HTML5 + Vanilla JS          SOC-style dashboard & pages
+Styling             Tailwind CSS + Custom CSS   Design system & theming
+Charts              Chart.js (CDN)              Live line, bar, doughnut charts
+Backend Server      Java 17 + Javalin 5         HTTP REST API + WebSocket server
+JSON                Jackson Databind            Java <-> JSON serialization
+Web Server          Eclipse Jetty 11            Embedded HTTP server via Javalin
+Build (Java)        Apache Maven 3.9            Dependency mgmt + fat JAR build
+Build (Electron)    electron-builder 24         Packages everything into .exe
+IPC Bridge          Electron contextBridge      Renderer <-> Main process comms
+
+
+--------------------------------------------------------------------------------
+3. PROJECT FILE STRUCTURE
+--------------------------------------------------------------------------------
+
+Log-Anomaly-Detection-System/
+|
+|-- main.js                  Electron main process (Node.js)
+|-- preload.js               IPC bridge (contextBridge API exposure)
+|-- index.html               App shell (sidebar, header, modal layout)
+|-- package.json             npm config + electron-builder packaging config
+|-- README.md                Project documentation
+|-- WALKTHROUGH.txt          This file
+|-- PIPELINE.txt             Detailed working pipeline
+|
+|-- js/
+|   +-- app.js               All frontend logic (~1500 lines)
+|                            Routing, rendering, WebSocket, charts, export
+|
+|-- styles/
+|   +-- main.css             Custom CSS + CSS variable theme system
+|
+|-- backend-core/            Java Maven project
+|   |-- pom.xml              Maven deps + shade plugin (fat JAR config)
+|   +-- src/main/java/
+|       |-- Main.java            Entry point — boots server + mock thread
+|       |-- ApiServer.java       Javalin HTTP routes + WebSocket server
+|       |-- AnomalyDetector.java Detection rules engine (3 rules)
+|       |-- LogParser.java       Multi-format log parser (5 strategies)
+|       |-- LogService.java      File-based batch log processing
+|       |-- MockGenerator.java   Background thread: simulates live traffic
+|       |-- Alert.java           Alert data model (POJO)
+|       +-- LogEntry.java        Log entry data model (POJO)
+|
+|-- build/
+|   +-- icon.png             App icon used by electron-builder
+|
++-- dist/                    Build output (auto-generated)
+    |-- Log Anomaly Detection System Setup 1.0.0.exe   NSIS installer ~79.7MB
+    +-- Log Anomaly Detection System 1.0.0.exe         Portable exe   ~79.5MB
+
+
+--------------------------------------------------------------------------------
+4. SOURCE FILE BREAKDOWN
+--------------------------------------------------------------------------------
+
+--- main.js ---
+The Electron main process. Responsibilities:
+  - Spawns the Java backend JAR as a child process on startup
+  - Kills the Java process cleanly on app quit (BUG-17 fix)
+  - Creates the BrowserWindow with security settings
+  - Handles all IPC channels (file dialogs, PDF generation, HTTP proxying)
+  - Generates PDF reports in a hidden BrowserWindow via printToPDF()
+
+--- preload.js ---
+The security bridge between the renderer and main process.
+Exposes two objects to the renderer via contextBridge:
+  - window.electronAPI: openFileDialog, saveFileDialog, saveBlobToFile, printReportHtml
+  - window.API: uploadLogFile, getAlerts, getStats, getSuspiciousIPs, getRecentLogs,
+                downloadReportPdf, downloadReportCsv, getSettings, saveSettings,
+                blockIP, resolveAlert
+
+--- index.html ---
+The app shell. Contains:
+  - Sidebar navigation with nav-link elements
+  - Top header bar with search, notifications, theme toggle
+  - Main content area (#page-content) — replaced on every navigation
+  - Alert detail modal (#alert-modal)
+  - Notification toast container (#notification-container)
+
+--- js/app.js ---
+All frontend logic in one file. Sections:
+  - STATE: Central state object (alerts, stats, suspiciousIPs, charts, etc.)
+  - MOCK DATA: initMockData() seeds 8 demo alerts on startup
+  - ROUTING: navigateTo(page) swaps #page-content and updates nav active state
+  - DASHBOARD: renderDashboard() — stat cards, 3 Chart.js instances, terminal feed
+  - LOGS UPLOAD: renderLogsUpload() — drag-drop zone, file picker, progress bar
+  - ALERTS: renderAlerts() — filterable table, severity badges, modal, Block/Resolve
+  - REPORTS: renderReports() — PDF/CSV export buttons, download history
+  - SUSPICIOUS IPs: renderSuspiciousIPs() — table + horizontal bar chart
+  - SETTINGS: renderSettings() — threshold inputs, rule toggles, backend sync
+  - NOTIFICATIONS: showNotification() — animated toast system
+  - REPORT BUILDER: buildReportHtml() — generates full A4 HTML report
+  - UTILITIES: formatNumber(), fetchWithFallback()
+  - WEBSOCKET: initWebSocket() — connects, receives alerts, updates UI live
+  - INITIALIZATION: DOMContentLoaded handler — boots everything
+
+--- styles/main.css ---
+  - CSS custom property tokens for dark/light theming
+  - Sidebar collapse animation
+  - Navigation active states
+  - Severity badge styles (critical/warning/normal)
+  - Terminal log viewer styles
+  - Data table styles
+  - Upload drag-and-drop zone
+  - Scrollbar styling
+  - Keyframe animations (fadeIn, modalIn, spin)
+  - Print/PDF media query overrides
+
+--- Main.java ---
+Entry point. Creates AnomalyDetector and ApiServer, starts MockGenerator
+as a daemon thread. Optionally processes a log file passed as CLI argument.
+
+--- ApiServer.java ---
+Javalin HTTP + WebSocket server on port 8080.
+  - GET  /api/alerts      Returns [] placeholder
+  - POST /api/upload      Parses uploaded log text, detects anomalies, broadcasts
+  - POST /api/block/{ip}  Adds IP to blockedIPs ConcurrentHashMap Set
+  - POST /api/settings    Updates bruteForceThreshold
+  - WS   /ws/alerts       Manages active WebSocket sessions, broadcasts alerts
+
+--- AnomalyDetector.java ---
+Stateless detection engine. detectAnomalies(logs, threshold) applies 3 rules:
+  Rule 1: Brute Force — count FAILED LOGINs per IP, alert if >= threshold
+  Rule 2: High Activity — count all entries per IP, alert if > 10
+  Rule 3: Unusual Time — alert any LOGIN between hours 0 and 5 AM
+
+--- LogParser.java ---
+Multi-format line parser. 5 strategies tried in order per line:
+  1. Legacy: [ts] IP=x USER=y EVENT=z STATUS=w
+  2. Windows Event Viewer TSV (with date format conversion)
+  3. JSON: {"ip":"x","timestamp":"y",...}
+  4. Key=Value: ip=x time=y user=z event=w
+  5. Heuristic: regex for IP + timestamp, keyword guessing for event/status/user
+
+--- MockGenerator.java ---
+Background thread (daemon). Runs every 3 seconds:
+  90% chance: 1 normal LOGIN/SUCCESS + 0-2 FILE_ACCESS entries
+  10% chance: 6x LOGIN/FAILED from same attack IP (brute force simulation)
+Broadcasts all entries as normal traffic alerts, then runs AnomalyDetector.
+
+--- Alert.java / LogEntry.java ---
+Simple immutable POJOs with all-args constructor and getters.
+Alert: timestamp, ipAddress, type, severity, description
+LogEntry: timestamp, ipAddress, username, eventType, status
+
+
+--------------------------------------------------------------------------------
+5. UI PAGES SUMMARY
+--------------------------------------------------------------------------------
+
+PAGE              WHAT IT SHOWS
+---------------------------------------------------------------------------
+Dashboard         4 live counters (Logs, Alerts, Failed Logins, Unique IPs)
+                  Line chart: alerts over time (last 10 ticks)
+                  Bar chart: event type frequency
+                  Doughnut chart: severity breakdown (critical/warning/normal)
+                  Terminal-style live log feed (most recent at top)
+
+Upload Logs       Drag-and-drop zone for .log / .txt / .csv files
+                  File browser button alternative
+                  Processing status bar and results summary card
+
+Alerts            Searchable, filterable table of all alerts
+                  Filter by: All / Critical / Warning / Normal severity
+                  Columns: Timestamp, IP, Event Type, Severity, Status, Actions
+                  Click row -> detail modal with Block IP / Resolve buttons
+
+Reports           Generate PDF button -> saves structured A4 PDF report
+                  Export CSV button -> saves RFC 4180 spreadsheet file
+                  Download history (filename + time of each export)
+
+Suspicious IPs    Flagged IP table (attempts, last seen, risk level badge)
+                  Horizontal bar chart of top IPs by attempt count
+                  Search/filter by IP address
+                  Block IP action button per row
+
+Settings          Brute force failed login threshold slider (default: 5)
+                  Anomaly detection time window (default: 15 min)
+                  Toggle switches: Brute Force / Port Scan / Priv Escalation
+                  Changes auto-sync to Java backend via POST /api/settings
+
+
+--------------------------------------------------------------------------------
+6. THEME SYSTEM
+--------------------------------------------------------------------------------
+
+Dark mode (default) and light mode are implemented using CSS custom properties.
+
+DARK MODE — applied to :root (always active as base):
+  --bg-app        #0f172a    Deep navy background
+  --bg-card       rgba(30,41,59,0.5)
+  --text-primary  #f1f5f9    Near-white text
+  --border-color  rgba(51,65,85,0.5)
+
+LIGHT MODE — applied when <html> has class "light":
+  --bg-app        #f1f5f9    Light grey background
+  --bg-card       rgba(255,255,255,0.8)
+  --text-primary  #0f172a    Dark ink text
+  --border-color  rgba(148,163,184,0.4)
+
+Toggle button in top-right header adds/removes "light" class on <html>.
+Tailwind's "dark" class is kept in sync so Tailwind dark: utilities work too.
+All transitions use 0.3s ease on background-color and color.
+
+
+--------------------------------------------------------------------------------
+7. IPC CHANNEL REFERENCE
+--------------------------------------------------------------------------------
+
+CHANNEL                 DIRECTION               PURPOSE
+---------------------------------------------------------------------------
+open-file-dialog        Renderer -> Main        Browse for log files
+save-file-dialog        Renderer -> Main        Save PDF or CSV dialog
+save-blob-to-file       Renderer -> Main        Write base64 data to disk
+print-report-html       Renderer -> Main        Generate PDF from HTML
+upload-log-file         Renderer -> Main        Forward log file to Java
+get-alerts              Renderer -> Main        Fetch alert list from state
+get-stats               Renderer -> Main        Fetch stats object
+get-suspicious-ips      Renderer -> Main        Fetch suspicious IP list
+get-recent-logs         Renderer -> Main        Fetch last 50 log lines
+get-settings            Renderer -> Main        Load saved settings
+save-settings           Renderer -> Main        Push thresholds to Java
+block-ip                Renderer -> Main        POST to /api/block/{ip}
+resolve-alert           Renderer -> Main        UI-only acknowledgement
+
+
+--------------------------------------------------------------------------------
+8. PACKAGING
+--------------------------------------------------------------------------------
+
+Command: npm run build:win
+
+Produces two files in dist/:
+  - Log Anomaly Detection System Setup 1.0.0.exe  (NSIS installer, ~79.7 MB)
+  - Log Anomaly Detection System 1.0.0.exe        (Portable exe,   ~79.5 MB)
+
+Contents bundled inside the exe:
+  - Electron v28 runtime (Chromium + Node.js)
+  - index.html, main.js, preload.js, app.js, main.css
+  - backend-core-fat.jar (all Java deps bundled, ~7.8 MB)
+
+Runtime requirement on target machine: Java 17+
+If Java is not found: friendly error dialog with download link shown.
+
+
+--------------------------------------------------------------------------------
+9. BUGS FIXED
+--------------------------------------------------------------------------------
+
+#  FILE                    ISSUE                           FIX
+---------------------------------------------------------------------------
+1  app.js line 844         CSV rows all on one line        '\\n' -> '\n'
+2  app.js line 843         CSV fields unquoted             Added csvEscape() RFC 4180
+3  AnomalyDetector.java    Alert timestamps were blank     LocalDateTime.now() used
+4  main.css                Light mode used filter:invert() CSS custom properties
+5  main.css                Duplicate scrollbar rules       Removed hardcoded duplicates
+6  main.css                Invalid CSS selector            Removed .bg-slate-800\/50
+7  main.css                h1-h3 override broke dark mode  Scoped to html.light only
+8  main.js                 Java ran after Electron closed  will-quit -> kill() handler
+9  main.js                 DevTools open in production     Gated with !app.isPackaged
+
+
+================================================================================
+END OF WALKTHROUGH
+================================================================================

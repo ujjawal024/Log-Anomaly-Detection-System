@@ -2,10 +2,179 @@
 :root {
   --sidebar-width: 260px;
   --sidebar-collapsed: 72px;
+
+  /* === Dark Mode Tokens (default) === */
+  --bg-app:        #0f172a;
+  --bg-sidebar:    rgba(30, 41, 59, 0.95);
+  --bg-header:     rgba(30, 41, 59, 0.5);
+  --bg-card:       rgba(30, 41, 59, 0.5);
+  --bg-input:      #1e293b;
+  --bg-table-row:  rgba(51, 65, 85, 0.2);
+  --bg-terminal:   #020617;
+  --bg-toggle:     #475569;
+  --border-color:  rgba(51, 65, 85, 0.5);
+  --border-input:  #475569;
+  --text-primary:  #f1f5f9;
+  --text-secondary:#94a3b8;
+  --text-muted:    #64748b;
+  --text-mono:     #cbd5e1;
+  --scrollbar-track: rgba(30, 41, 59, 0.5);
+  --scrollbar-thumb: rgba(71, 85, 105, 0.8);
+  --nav-active-bg: linear-gradient(135deg, rgba(6,182,212,0.2), rgba(6,182,212,0.05));
+  --nav-hover-bg:  rgba(148, 163, 184, 0.1);
+  --grid-line:     rgba(71, 85, 105, 0.3);
+  --chart-tick:    #94a3b8;
 }
 
+/* === Light Mode Tokens === */
+html.light {
+  --bg-app:        #f1f5f9;
+  --bg-sidebar:    rgba(255,255,255,0.97);
+  --bg-header:     rgba(255,255,255,0.8);
+  --bg-card:       rgba(255,255,255,0.8);
+  --bg-input:      #ffffff;
+  --bg-table-row:  rgba(203, 213, 225, 0.4);
+  --bg-terminal:   #e2e8f0;
+  --bg-toggle:     #94a3b8;
+  --border-color:  rgba(148, 163, 184, 0.4);
+  --border-input:  #cbd5e1;
+  --text-primary:  #0f172a;
+  --text-secondary:#475569;
+  --text-muted:    #64748b;
+  --text-mono:     #1e293b;
+  --scrollbar-track: rgba(203, 213, 225, 0.5);
+  --scrollbar-thumb: rgba(148, 163, 184, 0.8);
+  --nav-active-bg: linear-gradient(135deg, rgba(6,182,212,0.15), rgba(6,182,212,0.05));
+  --nav-hover-bg:  rgba(100, 116, 139, 0.08);
+  --grid-line:     rgba(148, 163, 184, 0.3);
+  --chart-tick:    #475569;
+}
+
+/* === Apply tokens to core elements === */
 body {
   font-family: 'Space Grotesk', system-ui, sans-serif;
+  background-color: var(--bg-app);
+  color: var(--text-primary);
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+#sidebar {
+  background: var(--bg-sidebar) !important;
+  border-color: var(--border-color) !important;
+}
+
+.header {
+  background: var(--bg-header) !important;
+  border-color: var(--border-color) !important;
+}
+
+.stat-card {
+  background: var(--bg-card) !important;
+  border-color: var(--border-color) !important;
+}
+
+/* Only restyle text/heading colors in light mode — dark mode uses Tailwind utility classes */
+html.light #page-title,
+html.light h1, html.light h2, html.light h3 {
+  color: var(--text-primary);
+}
+
+html.light .text-slate-400,
+html.light .text-slate-500 {
+  color: var(--text-secondary);
+}
+
+/* Input fields in light mode */
+html.light input,
+html.light select,
+html.light textarea {
+  background-color: var(--bg-input) !important;
+  border-color: var(--border-input) !important;
+  color: var(--text-primary) !important;
+}
+
+/* Table rows */
+html.light .data-table tr:hover td {
+  background: var(--bg-table-row) !important;
+}
+
+html.light .data-table th {
+  color: var(--text-secondary) !important;
+  border-color: var(--border-color) !important;
+}
+
+html.light .data-table td {
+  border-color: var(--border-color) !important;
+  color: var(--text-primary) !important;
+}
+
+/* Terminal */
+html.light .terminal-log {
+  background: var(--bg-terminal) !important;
+  border-color: var(--border-color) !important;
+  color: var(--text-secondary) !important;
+}
+
+html.light .terminal-log .log-line {
+  color: var(--text-secondary);
+}
+
+/* Nav */
+html.light .nav-link {
+  color: var(--text-secondary);
+}
+
+html.light .nav-link:not(.active):hover {
+  background: var(--nav-hover-bg) !important;
+}
+
+/* Background cards in light */
+html.light [class*="bg-slate-800"] {
+  background: var(--bg-card) !important;
+}
+
+html.light [class*="bg-slate-900"] {
+  background: var(--bg-app) !important;
+}
+
+html.light [class*="bg-slate-950"] {
+  background: var(--bg-terminal) !important;
+}
+
+html.light [class*="text-slate-100"],
+html.light [class*="text-slate-200"],
+html.light [class*="text-slate-300"] {
+  color: var(--text-primary) !important;
+}
+
+html.light [class*="border-slate-700"] {
+  border-color: var(--border-color) !important;
+}
+
+/* Badges still readable in light */
+html.light .severity-critical { background: rgba(239,68,68,0.12); color: #b91c1c; border-color: rgba(239,68,68,0.3); }
+html.light .severity-warning  { background: rgba(245,158,11,0.12); color: #92400e; border-color: rgba(245,158,11,0.3); }
+html.light .severity-normal   { background: rgba(34,197,94,0.12);  color: #14532d; border-color: rgba(34,197,94,0.3); }
+
+/* Scrollbar — token-based so it responds to theme switches */
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+
+/* Upload zone */
+html.light .upload-zone {
+  border-color: var(--border-input) !important;
+}
+
+/* === PDF / Print Report Styles === */
+@media print {
+  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+  body { background: #ffffff !important; color: #0f172a !important; }
 }
 
 .font-mono {
@@ -145,20 +314,10 @@ body {
   @apply h-full bg-gradient-to-r from-cyan-500 to-cyan-400 transition-all duration-500;
 }
 
-/* Scrollbar styling */
+/* Scrollbar sizing — token colours handled above */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
-}
-
-::-webkit-scrollbar-track {
-  background: rgba(30, 41, 59, 0.5);
-  border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb {
-  background: rgba(71, 85, 105, 0.8);
-  border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
@@ -189,17 +348,4 @@ body {
   transform: translateX(24px);
 }
 
-/* Base Light Mode Hack */
-html:not(.dark) body {
-  filter: invert(1) hue-rotate(180deg);
-  background-color: #0f172a; /* Because it gets inverted to slate-100! */
-}
 
-html:not(.dark) img,
-html:not(.dark) canvas,
-html:not(.dark) svg.text-slate-300,
-html:not(.dark) .severity-critical,
-html:not(.dark) .severity-warning,
-html:not(.dark) .severity-normal {
-  filter: invert(1) hue-rotate(180deg);
-}

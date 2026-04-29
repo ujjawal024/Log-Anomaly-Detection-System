@@ -1,0 +1,621 @@
+================================================================================
+       LOG ANOMALY DETECTION SYSTEM (LADS)
+       Project Walkthrough & Working Pipeline
+================================================================================
+Generated: 2026-04-28
+Author   : UJJAWAL
+Version  : 1.0.0
+================================================================================
+
+
+--------------------------------------------------------------------------------
+SECTION 1 — WHAT IS LADS?
+--------------------------------------------------------------------------------
+
+LADS (Log Anomaly Detection System) is a Security Operations Center (SOC) style
+desktop application. It monitors system logs in real-time, detects security
+anomalies using configurable rules, and displays them on a live dashboard.
+
+The app is packaged as a standalone Windows .exe that auto-starts both the
+Electron frontend and the Java backend together — no terminal needed.
+
+
+--------------------------------------------------------------------------------
+SECTION 2 — TECHNOLOGY STACK
+--------------------------------------------------------------------------------
+
+LAYER               TECHNOLOGY                  PURPOSE
+---------------------------------------------------------------------------
+Desktop Shell       Electron v28                Wraps web UI as a Windows app
+Frontend UI         HTML5 + Vanilla JS          SOC-style dashboard & pages
+Styling             Tailwind CSS + Custom CSS   Design system & theming
+Charts              Chart.js (CDN)              Live line, bar, doughnut charts
+Backend Server      Java 17 + Javalin 5         HTTP REST API + WebSocket server
+JSON                Jackson Databind            Java <-> JSON serialization
+Web Server          Eclipse Jetty 11            Embedded HTTP server (via Javalin)
+Build (Java)        Apache Maven 3.9            Dependency mgmt + fat JAR build
+Build (Electron)    electron-builder 24         Packages everything into .exe
+IPC Bridge          Electron contextBridge      Renderer <-> Main process comms
+
+
+--------------------------------------------------------------------------------
+SECTION 3 — PROJECT FILE STRUCTURE
+--------------------------------------------------------------------------------
+
+Log-Anomaly-Detection-System/
+|
+|-- main.js                  Electron main process (Node.js)
+|-- preload.js               IPC bridge (contextBridge API exposure)
+|-- index.html               App shell (sidebar, header, modal layout)
+|-- package.json             npm config + electron-builder packaging config
+|
+|-- js/
+|   +-- app.js               All frontend logic (~1500 lines)
+|                            Routing, rendering, WebSocket, charts, export
+|
+|-- styles/
+|   +-- main.css             Custom CSS + CSS variable theme system
+|
+|-- backend-core/            Java Maven project
+|   |-- pom.xml              Maven deps + shade plugin (fat JAR config)
+|   +-- src/main/java/
+|       |-- Main.java            Entry point — boots server + mock thread
+|       |-- ApiServer.java       Javalin HTTP routes + WebSocket server
+|       |-- AnomalyDetector.java Detection rules engine (3 rules)
+|       |-- LogParser.java       Multi-format log parser (5 strategies)
+|       |-- LogService.java      File-based batch log processing
+|       |-- MockGenerator.java   Background thread: simulates live traffic
+|       |-- Alert.java           Alert data model (POJO)
+|       +-- LogEntry.java        Log entry data model (POJO)
+|
+|-- build/
+|   +-- icon.png             App icon used by electron-builder
+|
++-- dist/                    Build output (auto-generated)
+    |-- Log Anomaly Detection System Setup 1.0.0.exe   (NSIS installer ~79.7MB)
+    +-- Log Anomaly Detection System 1.0.0.exe         (Portable exe  ~79.5MB)
+
+
+--------------------------------------------------------------------------------
+SECTION 4 — ARCHITECTURE OVERVIEW
+--------------------------------------------------------------------------------
+
++------------------------------------------------------------------+
+|                     Windows .exe (Electron)                      |
+|                                                                  |
+|  +--------------------+         +----------------------------+   |
+|  | Renderer Process   |<--IPC-->| Main Process (Node.js)     |   |
+|  | (Chromium)         |         |                            |   |
+|  |                    |         | main.js                    |   |
+|  | index.html         |         |  |- spawns java -jar       |   |
+|  | js/app.js          |         |  |- file open/save dialogs |   |
+|  | styles/main.css    |         |  |- PDF print (hidden win) |   |
+|  | Chart.js           |         |  |- blob/file write        |   |
+|  | Tailwind CSS       |         |                            |   |
+|  +--------+-----------+         +----------------------------+   |
+|           |                                                      |
+|           | WebSocket: ws://localhost:8080/ws/alerts             |
+|           | HTTP REST:  http://localhost:8080/api/...            |
++-----------|------------------------------------------------------+
+            |
++-----------v------------------------------------------------------+
+|          Java Backend (Javalin + Jetty) — port 8080              |
+|                                                                  |
+|  +---------------------+   +--------------------------------+   |
+|  | MockGenerator       |   | ApiServer (REST + WebSocket)   |   |
+|  | (background thread) |   |                                |   |
+|  |                     |   | GET  /api/alerts  -> []        |   |
+|  | Every 3 seconds:    |   | POST /api/upload  -> parse log |   |
+|  | 90% -> normal login |   | POST /api/block/{ip}           |   |
+|  | 10% -> brute force  |   | POST /api/settings             |   |
+|  |        simulation   |   | WS   /ws/alerts  -> broadcast  |   |
+|  +---------+-----------+   +--------------------------------+   |
+|            | LogEntry[]                                          |
+|            v                                                     |
+|  +-----------------------------------------+                    |
+|  | AnomalyDetector.detectAnomalies()        |                    |
+|  |                                          |                    |
+|  | Rule 1: Brute Force                      |                    |
+|  |         >= N failed logins from same IP  |                    |
+|  |         -> Alert (severity: High)        |                    |
+|  |                                          |                    |
+|  | Rule 2: High Activity                    |                    |
+|  |         > 10 total entries from same IP  |                    |
+|  |         -> Alert (severity: Medium)      |                    |
+|  |                                          |                    |
+|  | Rule 3: Unusual Login Time               |                    |
+|  |         LOGIN between 00:00 and 05:59AM  |                    |
+|  |         -> Alert (severity: Low)         |                    |
+|  +-----------------------------------------+                    |
+|            | Alert[]                                             |
+|            v                                                     |
+|  broadcastAlert() -> JSON -> all WebSocket clients              |
++------------------------------------------------------------------+
+
+
+--------------------------------------------------------------------------------
+SECTION 5 — WORKING PIPELINE (STEP BY STEP)
+--------------------------------------------------------------------------------
+
+=== PIPELINE A: APP STARTUP ===
+
+1. User double-clicks .exe
+   |
+2. Electron main process starts (main.js)
+   |
+3. main.js calls startJavaBackend()
+   |-- Resolves JAR path:
+   |     Development:  backend-core/target/backend-core-fat.jar
+   |     Production:   resources/backend-core-fat.jar (inside the .exe)
+   +-- Spawns process: java -jar <jarPath>
+
+4. Java boots up:
+   |-- AnomalyDetector instantiated
+   |-- ApiServer.init():
+   |     Javalin starts on port 8080
+   |     REST routes registered
+   |     WebSocket /ws/alerts registered
+   +-- MockGenerator daemon thread starts
+
+5. After 1500ms delay, Electron opens BrowserWindow
+   +-- Loads index.html
+
+6. Browser renderer (app.js) fires DOMContentLoaded:
+   |-- initMockData()  -> seeds 8 hardcoded demo alerts in state
+   |-- initWebSocket() -> connects ws://localhost:8080/ws/alerts
+   +-- navigateTo('dashboard') -> renders the dashboard page
+
+
+=== PIPELINE B: REAL-TIME MOCK TRAFFIC (every 3 seconds) ===
+
+MockGenerator.run() loop:
+   |
+   |-- 90% chance: Normal Traffic
+   |     LogEntry: LOGIN/SUCCESS from random IP in pool
+   |     + 0 to 2 FILE_ACCESS entries
+   |
+   +-- 10% chance: Brute Force Simulation
+         6x LogEntry: LOGIN/FAILED from 192.168.1.2xx (random last octet)
+
+   For every LogEntry:
+   |-- Check if IP is in blockedIPs -> skip if blocked
+   +-- Wrap as Alert(severity="Normal") -> broadcastAlert()
+
+   Pass all LogEntries to AnomalyDetector:
+   |-- Rule 1: Count FAILED logins per IP
+   |     if count >= bruteForceThreshold (default: 5)
+   |     -> Alert("Brute Force", severity="High", timestamp=now)
+   |
+   |-- Rule 2: Count all entries per IP
+   |     if count > 10
+   |     -> Alert("Suspicious Activity", severity="Medium", timestamp=now)
+   |
+   +-- Rule 3: For each LOGIN entry
+         if timestamp hour is 0 to 5 AM
+         -> Alert("Unusual Login Time", severity="Low")
+
+   Each Alert -> broadcastAlert():
+   |-- Serialize to JSON using Jackson ObjectMapper
+   +-- Send to all active WebSocket sessions (ConcurrentHashMap-backed Set)
+
+
+=== PIPELINE C: WEBSOCKET MESSAGE RECEIVED (FRONTEND) ===
+
+ws.onmessage(event):
+   |
+   Parse JSON: { timestamp, ipAddress, type, severity, description }
+   |
+   Map Java severity to frontend severity:
+   |   "High"   -> "critical"
+   |   "Medium" -> "warning"
+   |   "Low"    -> "normal"
+   |   other    -> use raw value or "normal"
+   |
+   Build alert object:
+   { id, timestamp, ip, username:"unknown", eventType, severity, status:"Active" }
+   |
+   state.mockAlerts.unshift(alert)   <- newest first
+   state.stats.totalAlerts++
+   |
+   |-- If eventType contains "fail" or "brute":
+   |     state.stats.failedLogins++
+   |
+   |-- Look up IP in state.mockSuspiciousIPs:
+   |     Found   -> attempts++, update lastSeen, upgrade riskLevel if critical
+   |     Not found and IP != 'unknown'
+   |             -> add new entry, state.stats.uniqueIPs++
+   |
+   |-- If severity is critical or warning:
+   |     showNotification() toast in top-right corner
+   |     increment notification badge counter
+   |
+   +-- Live UI update based on current page:
+         dashboard      -> update counter DOM + prepend line to terminal log
+         alerts         -> re-dispatch input event on search box (re-filter)
+         suspicious-ips -> re-dispatch input event on search box (re-filter)
+         all pages      -> updateDynamicCharts() -> Chart.js data push + update
+
+
+=== PIPELINE D: LOG FILE UPLOAD ===
+
+User drags a .log / .txt / .csv file or clicks Browse:
+   |
+app.js -> window.electronAPI.openFileDialog()
+   |
+preload.js -> ipcRenderer.invoke('open-file-dialog')
+   |
+main.js -> dialog.showOpenDialog() -> returns { filePath }
+   |
+app.js -> API.uploadLogFile(file)
+   |
+preload.js -> ipcRenderer.invoke('upload-log-file', file.path)
+   |
+main.js:
+   |-- fs.readFileSync(filePath) -> reads file from disk
+   +-- fetch POST http://localhost:8080/api/upload  body=raw text
+
+ApiServer /api/upload handler:
+   |-- Split body by \n into individual lines
+   |-- For each line -> LogParser.parseLine():
+   |
+   |     Strategy 1 (Legacy Format):
+   |       [YYYY-MM-DD HH:mm:ss] IP=x USER=y EVENT=z STATUS=w
+   |
+   |     Strategy 2 (Windows Event Viewer TSV):
+   |       Tab-separated columns, extracts Account Name, Source Network Address
+   |       Converts DD-MM-YYYY to YYYY-MM-DD
+   |
+   |     Strategy 3 (JSON):
+   |       { "ip": "...", "timestamp": "...", "event": "...", ... }
+   |
+   |     Strategy 4 (Key=Value / Splunk / CEF):
+   |       ip=x time=y user=z event=w status=v
+   |
+   |     Strategy 5 (Heuristic Fallback):
+   |       Regex scan for IP address pattern
+   |       Regex scan for timestamp pattern
+   |       Keyword search for success/fail/error
+   |       Keyword search for login/auth/sql/http
+   |
+   |-- Skip entries from blockedIPs
+   |-- broadcastAlert() each parsed line as normal traffic
+   |-- Run AnomalyDetector on full batch
+   |-- broadcastAlert() each anomaly alert
+   +-- Return { logsProcessed: N, alertsDetected: M }
+
+Frontend:
+   +-- Updates upload stats display, triggers navigation to Alerts page
+
+
+=== PIPELINE E: IP BLOCKING ===
+
+User clicks "Block IP" button in alert detail modal:
+   |
+app.js -> API.blockIP(ipAddress)
+   |
+preload.js -> ipcRenderer.invoke('block-ip', ip)
+   |
+main.js -> fetch POST http://localhost:8080/api/block/{ip}
+   |
+ApiServer:
+   +-- blockedIPs.add(ip)   (thread-safe ConcurrentHashMap-backed Set)
+
+Future effect:
+   |-- MockGenerator: if entry.ip in blockedIPs -> skip broadcastAlert()
+   +-- /api/upload:  if entry.ip in blockedIPs -> skip broadcastAlert()
+
+Frontend:
+   +-- Alert status updated to "Resolved (Blocked)" in state.mockAlerts
+
+
+=== PIPELINE F: PDF REPORT GENERATION ===
+
+User clicks "Generate PDF Report" on Reports page:
+   |
+app.js -> buildReportHtml():
+   |-- Reads all live state data (state.mockAlerts, state.stats, state.mockSuspiciousIPs)
+   |-- Generates a complete self-contained HTML document:
+   |
+   |   Page 1 - Cover Page:
+   |     Dark gradient background (navy -> teal)
+   |     LADS branding, shield SVG icon
+   |     4 live stat boxes (Total Logs, Alerts, Critical, Unique IPs)
+   |     Date, time, classification footer
+   |
+   |   Page 2 - Executive Summary:
+   |     8 color-coded stat cards
+   |     Written analysis paragraph with live numbers
+   |     Bullet point recommendations
+   |
+   |   Page 3 - Data Tables:
+   |     Top 50 alerts with color-coded severity badges
+   |     Top 20 suspicious IPs with risk level badges
+   |
+   +-- All styling is inline CSS (no external dependencies)
+
+app.js -> window.electronAPI.printReportHtml(htmlString)
+   |
+preload.js -> ipcRenderer.invoke('print-report-html', html)
+   |
+main.js:
+   |-- new BrowserWindow({ show: false })  <- invisible hidden window
+   |-- loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+   |-- Wait for 'did-finish-load' event
+   |-- Wait additional 800ms for Google Fonts to load
+   |-- printToPDF({ pageSize:'A4', printBackground:true, marginsType:1 })
+   |-- reportWin.destroy()  <- clean up hidden window
+   +-- Return base64-encoded PDF string
+
+app.js:
+   |-- electronAPI.saveFileDialog('LADS_Report_YYYY-MM-DD.pdf')
+   |-- electronAPI.saveBlobToFile(filePath, base64)
+   +-- showNotification('Report PDF saved!', 'success')
+
+
+=== PIPELINE G: CSV EXPORT ===
+
+User clicks "Export CSV" on Reports page:
+   |
+app.js:
+   |-- csvEscape(val) helper:
+   |     Wraps every field value in double quotes: "value"
+   |     Doubles any internal quotes: O"Brien -> "O""Brien"
+   |     Handles null/undefined values safely
+   |
+   |-- Header row: "Timestamp","IP","Event Type","Severity","Status"
+   |-- One row per entry in state.mockAlerts
+   +-- Rows joined with '\n'  (actual newline character, RFC 4180 compliant)
+
+Electron path:
+   |-- Blob -> FileReader -> readAsDataURL -> base64
+   |-- electronAPI.saveFileDialog('alerts_export.csv')
+   |-- electronAPI.saveBlobToFile(filePath, base64)
+   +-- showNotification('CSV saved successfully!', 'success')
+
+Browser fallback path (non-Electron):
+   |-- Blob -> URL.createObjectURL -> <a download> -> click()
+   +-- showNotification('CSV downloaded natively', 'success')
+
+
+=== PIPELINE H: SETTINGS SYNC ===
+
+User changes brute force threshold or toggles a detection rule:
+   |
+app.js -> performSave():
+   |-- Reads input values from settings page DOM
+   |-- Builds settings object:
+   |     { bruteForceThreshold, timeWindowMinutes,
+   |       bruteForceEnabled, portScanEnabled, privilegeEscalationEnabled }
+   |
+   +-- API.saveSettings(settings)
+             |
+   preload.js -> ipcRenderer.invoke('save-settings', settings)
+             |
+   main.js -> fetch POST http://localhost:8080/api/settings
+             body = JSON.stringify(settings)
+             |
+   ApiServer /api/settings:
+   +-- Parses bruteForceThreshold from JSON body
+       Updates ApiServer.bruteForceThreshold field
+       -> AnomalyDetector now uses new threshold on next run
+
+
+=== PIPELINE I: APP SHUTDOWN ===
+
+User clicks the X button to close the Electron window:
+   |
+app 'window-all-closed' event fires
+   +-- app.quit() called
+
+app 'will-quit' event fires
+   +-- stopJavaBackend():
+         javaProcess.kill('SIGTERM')
+         javaProcess = null
+
+Java process receives SIGTERM:
+   +-- JVM shuts down
+       Javalin stops Jetty
+       Port 8080 is freed
+       (No zombie process left running in background)
+
+
+--------------------------------------------------------------------------------
+SECTION 6 — UI PAGES SUMMARY
+--------------------------------------------------------------------------------
+
+PAGE              WHAT IT SHOWS
+---------------------------------------------------------------------------
+Dashboard         4 live counters (Logs, Alerts, Failed Logins, Unique IPs)
+                  Line chart: alerts over time
+                  Bar chart: events by category
+                  Doughnut chart: severity breakdown
+                  Terminal-style live log feed
+
+Upload Logs       Drag-and-drop zone for .log / .txt / .csv files
+                  Processing status bar and results summary
+
+Alerts            Searchable, filterable table of all alerts
+                  Columns: Timestamp, IP, Event, Severity, Status, Actions
+                  Click row -> detail modal with Block IP / Resolve buttons
+
+Reports           Export PDF button -> structured A4 report
+                  Export CSV button -> RFC 4180 compliant spreadsheet
+                  Download history log
+
+Suspicious IPs    Flagged IP address table (attempts, last seen, risk level)
+                  Horizontal bar chart of top IPs by attempt count
+                  Block IP action button per row
+
+Settings          Brute force failed login threshold (numeric input)
+                  Anomaly detection time window (numeric input)
+                  Toggle switches: Brute Force / Port Scan / Privilege Escalation
+                  Auto-syncs to Java backend on every change
+
+
+--------------------------------------------------------------------------------
+SECTION 7 — IPC CHANNEL REFERENCE
+--------------------------------------------------------------------------------
+
+CHANNEL                 DIRECTION               PURPOSE
+---------------------------------------------------------------------------
+open-file-dialog        Renderer -> Main        Browse for log files
+save-file-dialog        Renderer -> Main        Save PDF or CSV dialog
+save-blob-to-file       Renderer -> Main        Write base64 data to disk
+print-report-html       Renderer -> Main        Generate PDF from HTML
+upload-log-file         Renderer -> Main        Forward log file to Java
+get-alerts              Renderer -> Main        Fetch alert list from state
+get-stats               Renderer -> Main        Fetch stats object
+get-suspicious-ips      Renderer -> Main        Fetch suspicious IP list
+get-recent-logs         Renderer -> Main        Fetch last 50 log lines
+get-settings            Renderer -> Main        Load saved settings
+save-settings           Renderer -> Main        Push thresholds to Java
+block-ip                Renderer -> Main        POST to /api/block/{ip}
+resolve-alert           Renderer -> Main        UI-only acknowledgement
+
+
+--------------------------------------------------------------------------------
+SECTION 8 — THEME SYSTEM
+--------------------------------------------------------------------------------
+
+The app uses CSS custom property tokens — NOT a color inversion hack.
+
+DARK MODE (default — applied via :root):
+  --bg-app:        #0f172a   (deep navy)
+  --bg-card:       rgba(30,41,59,0.5)
+  --text-primary:  #f1f5f9   (near white)
+  --border-color:  rgba(51,65,85,0.5)
+
+LIGHT MODE (applied when html element has class "light"):
+  --bg-app:        #f1f5f9   (light grey)
+  --bg-card:       rgba(255,255,255,0.8)
+  --text-primary:  #0f172a   (dark ink)
+  --border-color:  rgba(148,163,184,0.4)
+
+Toggle logic in app.js:
+  html.classList.toggle('light')
+  If light -> remove 'dark' class (keeps Tailwind dark: utilities in sync)
+  If dark  -> add 'dark' class
+
+All transitions: 0.3s ease on background-color and color
+
+
+--------------------------------------------------------------------------------
+SECTION 9 — PACKAGING PIPELINE
+--------------------------------------------------------------------------------
+
+Command: npm run build:win
+
+STEP 1 — Build Java fat JAR
+  cd backend-core && mvn package -q
+  |
+  maven-shade-plugin bundles ALL dependencies:
+    Javalin 5.6.3
+    Eclipse Jetty 11
+    Jackson Databind 2.15
+    SLF4J logging
+    All transitive deps
+  |
+  Output: backend-core/target/backend-core-fat.jar  (~7.8 MB)
+  Can be run standalone: java -jar backend-core-fat.jar
+
+STEP 2 — Build Windows executables
+  electron-builder --win
+  |
+  Downloads: Electron v28 binaries (~108 MB, cached after first build)
+  Downloads: NSIS installer tools (~7 MB, cached)
+  |
+  Bundles into app package:
+    index.html, main.js, preload.js
+    js/app.js
+    styles/main.css
+    build/icon.png
+    node_modules/ (only runtime deps)
+    resources/backend-core-fat.jar   <- copied from target/
+  |
+  Output 1: dist/Log Anomaly Detection System Setup 1.0.0.exe
+    NSIS installer (~79.7 MB)
+    Installs to Program Files
+    Creates Desktop + Start Menu shortcuts named "LADS"
+    Can be uninstalled via Control Panel
+  |
+  Output 2: dist/Log Anomaly Detection System 1.0.0.exe
+    Portable exe (~79.5 MB)
+    No installation required
+    Just double-click to run
+
+RUNTIME REQUIREMENT:
+  Java 17 or later must be installed on the target machine.
+  If Java is not found in PATH, the app shows an error dialog:
+    "Java Not Installed — Download from https://adoptium.net/"
+
+
+--------------------------------------------------------------------------------
+SECTION 10 — LOG PARSER FORMAT SUPPORT
+--------------------------------------------------------------------------------
+
+LogParser.parseLine() tries 5 strategies in order:
+
+FORMAT 1 — Legacy / Custom Format
+  Pattern: [TIMESTAMP] IP=x USER=y EVENT=z STATUS=w
+  Example: [2025-03-03 14:32:18] IP=192.168.1.1 USER=admin EVENT=LOGIN STATUS=FAILED
+
+FORMAT 2 — Windows Event Viewer TSV Export
+  Tab-separated columns exported from Windows Event Viewer
+  Extracts: Account Name, Source Network Address, Keywords, Date/Time
+  Auto-converts date format from DD-MM-YYYY to YYYY-MM-DD
+
+FORMAT 3 — JSON Log Lines
+  Example: {"ip":"192.168.1.1","timestamp":"2025-03-03 14:32:18","event":"LOGIN","status":"FAILED"}
+  Supports aliases: client_ip/src_ip, time/date, username/account, action/type, result/outcome
+
+FORMAT 4 — Key=Value (Splunk / CEF / Syslog)
+  Example: time=2025-03-03 ip=192.168.1.1 user=admin event=LOGIN status=FAILED
+  Case-insensitive key matching
+
+FORMAT 5 — Heuristic Fallback
+  Extracts any IP address using regex \b(\d{1,3}\.){3}\d{1,3}\b
+  Extracts any timestamp matching YYYY-MM-DD HH:mm:ss or YYYY-MM-DDTHH:mm:ss
+  Guesses status from keywords: success/200/accepted or fail/error/401/403
+  Guesses user from patterns: "user:", "for", "account:"
+  Guesses event from keywords: login/auth, query/sql, GET/POST
+
+
+--------------------------------------------------------------------------------
+SECTION 11 — BUGS FIXED
+--------------------------------------------------------------------------------
+
+BUG  FILE                    DESCRIPTION                     FIX
+---------------------------------------------------------------------------
+1    app.js                  CSV all rows on one line        '\\n' -> '\n'
+     (line 844)              because \\n is literal text     (real newline)
+
+2    app.js                  CSV fields unquoted - commas    Added csvEscape()
+     (line 843)              break format                    RFC 4180 quoting
+
+3    AnomalyDetector.java    Brute Force and Suspicious      "" -> LocalDateTime
+     (lines 24, 41)          Activity alerts had blank       .now().format(TS)
+                             timestamps
+
+4    main.css                filter:invert() light mode      Replaced with CSS
+     (entire file)           hack inverted charts & icons    custom properties
+
+5    main.css                Extra duplicate scrollbar       Removed hardcoded
+     (lines 320-328)         rules overriding token-based    duplicate rules
+                             ones
+
+6    main.css                .bg-slate-800\/50 is an         Removed invalid
+     (line 72)               invalid CSS selector            selector
+
+7    main.css                h1/h2/h3 color override         Scoped to
+     (lines 77-80)           breaking dark mode              html.light only
+
+8    main.js                 Java backend kept running       Added will-quit
+     (entire file)           after Electron closed           -> kill() handler
+
+9    main.js                 DevTools open in packaged       Gated behind
+     (line 38)               production builds               !app.isPackaged
+
+
+--------------------------------------------------------------------------------
+END OF DOCUMENT
+--------------------------------------------------------------------------------

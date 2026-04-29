@@ -5,12 +5,68 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dev": "electron . --enable-logging"
+    "dev": "electron . --enable-logging",
+    "build:backend": "cd backend-core && mvn package -q",
+    "build:win": "npm run build:backend && electron-builder --win",
+    "build:portable": "npm run build:backend && electron-builder --win portable"
   },
-  "keywords": ["log", "anomaly", "detection", "security", "soc"],
-  "author": "",
+  "keywords": [
+    "log",
+    "anomaly",
+    "detection",
+    "security",
+    "soc"
+  ],
+  "author": "UJJAWAL",
   "license": "MIT",
   "devDependencies": {
-    "electron": "^28.0.0"
+    "electron": "^28.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.loganomaly.lads",
+    "productName": "Log Anomaly Detection System",
+    "copyright": "Copyright © 2025 UJJAWAL",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "**/*",
+      "!backend-core/**",
+      "!dist/**",
+      "!node_modules/.cache/**",
+      "!*.md"
+    ],
+    "extraResources": [
+      {
+        "from": "backend-core/target/backend-core-fat.jar",
+        "to": "backend-core-fat.jar"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "LADS"
+    }
   }
 }

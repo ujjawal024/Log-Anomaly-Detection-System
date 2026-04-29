@@ -21,8 +21,10 @@ public class AnomalyDetector {
         }
         for (Map.Entry<String, Integer> entry : failedByIp.entrySet()) {
             if (entry.getValue() >= bruteForceThreshold) {
+                // BUG-05 fix: use actual current timestamp instead of blank ""
+                String now = LocalDateTime.now().format(TS_FORMAT);
                 alerts.add(new Alert(
-                        "",
+                        now,
                         entry.getKey(),
                         "Brute Force",
                         "High",
@@ -38,8 +40,10 @@ public class AnomalyDetector {
         }
         for (Map.Entry<String, Integer> entry : countByIp.entrySet()) {
             if (entry.getValue() > 10) {
+                // BUG-05 fix: use actual current timestamp instead of blank ""
+                String now = LocalDateTime.now().format(TS_FORMAT);
                 alerts.add(new Alert(
-                        "",
+                        now,
                         entry.getKey(),
                         "Suspicious Activity",
                         "Medium",

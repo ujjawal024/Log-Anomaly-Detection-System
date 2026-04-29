@@ -3,7 +3,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('electronAPI', {
   openFileDialog: () => ipcRenderer.invoke('open-file-dialog'),
   saveFileDialog: (defaultName) => ipcRenderer.invoke('save-file-dialog', defaultName),
-  saveBlobToFile: (filePath, base64Data) => ipcRenderer.invoke('save-blob-to-file', filePath, base64Data)
+  saveBlobToFile: (filePath, base64Data) => ipcRenderer.invoke('save-blob-to-file', filePath, base64Data),
+  printReportHtml: (htmlContent) => ipcRenderer.invoke('print-report-html', htmlContent)
 });
 
 contextBridge.exposeInMainWorld('API', {

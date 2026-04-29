@@ -10,3 +10,6 @@ target/
 backend_out.log
 backend_err.log
 alerts.json
+node_modules/
+dist/
+build/

@@ -800,54 +800,53 @@ function renderReports(container) {
 
   document.getElementById('export-pdf').addEventListener('click', async function() {
     try {
-      if (API.downloadReportPdf) {
-        var base64 = await API.downloadReportPdf();
-        if (!base64 || typeof base64 !== 'string') throw new Error("Failed to capture PDF layout");
-        
-        if (window.electronAPI && window.electronAPI.saveFileDialog) {
-          window.electronAPI.saveFileDialog('report.pdf').then(function(r) {
-            if (!r.canceled && r.filePath && window.electronAPI.saveBlobToFile) {
-              window.electronAPI.saveBlobToFile(r.filePath, base64).then(function(res) {
-                showNotification(res.success ? 'PDF saved successfully!' : 'Save failed', res.success ? 'success' : 'error');
-                if (res.success) {
-                  state.downloadHistory.unshift({ filename: r.filePath.split(/[\\\\/]/).pop(), time: new Date().toLocaleTimeString() });
-                  if (state.currentPage === 'reports') renderReports(document.getElementById('page-content'));
-                }
-              });
-            }
-          });
-        } else {
-          // Native browser fallback for web mode
-          var byteCharacters = atob(base64);
-          var byteNumbers = new Array(byteCharacters.length);
-          for (let i = 0; i < byteCharacters.length; i++) {
-              byteNumbers[i] = byteCharacters.charCodeAt(i);
+      showNotification('Generating report PDF…', 'info');
+      const reportHtml = buildReportHtml();
+
+      if (window.electronAPI && window.electronAPI.printReportHtml) {
+        // Ask main process to open a hidden window, inject html, and printToPDF
+        const base64 = await window.electronAPI.printReportHtml(reportHtml);
+        if (!base64) throw new Error('PDF generation failed in main process');
+
+        const saveResult = await window.electronAPI.saveFileDialog('LADS_Report_' + new Date().toISOString().slice(0,10) + '.pdf');
+        if (!saveResult.canceled && saveResult.filePath) {
+          const res = await window.electronAPI.saveBlobToFile(saveResult.filePath, base64);
+          showNotification(res.success ? 'Report PDF saved!' : 'Save failed', res.success ? 'success' : 'error');
+          if (res.success) {
+            state.downloadHistory.unshift({ filename: saveResult.filePath.split(/[\\\/]/).pop(), time: new Date().toLocaleTimeString() });
+            if (state.currentPage === 'reports') renderReports(document.getElementById('page-content'));
           }
-          var byteArray = new Uint8Array(byteNumbers);
-          var blob = new Blob([byteArray], {type: 'application/pdf'});
-          var a = document.createElement('a');
-          a.href = URL.createObjectURL(blob);
-          a.download = 'report.pdf';
-          a.click();
-          showNotification('PDF downloaded natively', 'success');
-          state.downloadHistory.unshift({ filename: 'report.pdf', time: new Date().toLocaleTimeString() });
-          if (state.currentPage === 'reports') renderReports(document.getElementById('page-content'));
         }
-      } else if (window.electronAPI && window.electronAPI.saveFileDialog) {
-        window.electronAPI.saveFileDialog('report.pdf').then(function(r) {
-          if (!r.canceled) showNotification('Backend not connected - save dialog opened', 'info');
-        });
+      } else {
+        // Fallback: open in a new browser tab / print dialog
+        const blob = new Blob([reportHtml], { type: 'text/html;charset=utf-8' });
+        const url  = URL.createObjectURL(blob);
+        const win  = window.open(url, '_blank');
+        if (win) {
+          win.onload = () => { win.print(); };
+          showNotification('Report opened for printing', 'success');
+        } else {
+          showNotification('Pop-up blocked — could not open report', 'error');
+        }
+        state.downloadHistory.unshift({ filename: 'report.pdf', time: new Date().toLocaleTimeString() });
+        if (state.currentPage === 'reports') renderReports(document.getElementById('page-content'));
       }
     } catch (err) {
       showNotification('PDF export failed: ' + err.message, 'error');
+      console.error('PDF export error:', err);
     }
   });
 
   document.getElementById('export-csv').addEventListener('click', async function() {
     try {
+      // BUG-02 fix: RFC 4180 CSV escaping — wrap every field in quotes, double any internal quotes
+      const csvEscape = (val) => '"' + String(val == null ? '' : val).replace(/"/g, '""') + '"';
+
       const rows = [['Timestamp', 'IP', 'Event Type', 'Severity', 'Status']];
       state.mockAlerts.forEach(a => rows.push([a.timestamp, a.ip, a.eventType, a.severity, a.status]));
-      const csvStr = rows.map(r => r.join(',')).join('\\n');
+
+      // BUG-01 fix: use '\n' (real newline), not '\\n' (literal backslash-n)
+      const csvStr = rows.map(r => r.map(csvEscape).join(',')).join('\n');
       const blob = new Blob([csvStr], { type: 'text/csv;charset=utf-8;' });
       
       if (window.electronAPI && window.electronAPI.saveFileDialog) {
@@ -990,6 +989,322 @@ function showNotification(message, type = 'info') {
   }, 4000);
 }
 
+// ============ REPORT HTML BUILDER ============
+function buildReportHtml() {
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('en-IN', { year: 'numeric', month: 'long', day: 'numeric' });
+  const timeStr = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+
+  const criticalCount = state.mockAlerts.filter(a => a.severity === 'critical').length;
+  const warningCount  = state.mockAlerts.filter(a => a.severity === 'warning').length;
+  const resolvedCount = state.mockAlerts.filter(a => a.status === 'Resolved' || a.status === 'Resolved (Blocked)').length;
+
+  const sevColor = { critical: '#ef4444', warning: '#f59e0b', normal: '#22c55e' };
+  const sevBg    = { critical: '#fef2f2', warning: '#fffbeb', normal: '#f0fdf4' };
+  const sevText  = { critical: '#991b1b', warning: '#92400e', normal: '#14532d' };
+
+  const alertRows = state.mockAlerts.slice(0, 50).map(a => {
+    const sev = a.severity || 'normal';
+    return `
+      <tr>
+        <td style="font-family:monospace;font-size:11px;padding:7px 10px;border-bottom:1px solid #e2e8f0;">${a.timestamp || ''}</td>
+        <td style="font-family:monospace;color:#0284c7;padding:7px 10px;border-bottom:1px solid #e2e8f0;">${a.ip || a.ipAddress || ''}</td>
+        <td style="padding:7px 10px;border-bottom:1px solid #e2e8f0;">${a.username || ''}</td>
+        <td style="padding:7px 10px;border-bottom:1px solid #e2e8f0;">${a.eventType || ''}</td>
+        <td style="padding:7px 10px;border-bottom:1px solid #e2e8f0;">
+          <span style="display:inline-block;padding:2px 8px;border-radius:9999px;font-size:11px;font-weight:600;
+            background:${sevBg[sev]};color:${sevText[sev]};border:1px solid ${sevColor[sev]}40;">
+            ${sev.charAt(0).toUpperCase() + sev.slice(1)}
+          </span>
+        </td>
+        <td style="padding:7px 10px;border-bottom:1px solid #e2e8f0;">${a.status || 'Active'}</td>
+      </tr>`;
+  }).join('');
+
+  const ipRows = state.mockSuspiciousIPs.slice(0, 20).map(ip => {
+    const rl = ip.riskLevel || 'normal';
+    return `
+      <tr>
+        <td style="font-family:monospace;color:#0284c7;padding:7px 10px;border-bottom:1px solid #e2e8f0;">${ip.ip}</td>
+        <td style="font-weight:700;padding:7px 10px;border-bottom:1px solid #e2e8f0;">${ip.attempts}</td>
+        <td style="font-family:monospace;font-size:11px;padding:7px 10px;border-bottom:1px solid #e2e8f0;">${ip.lastSeen}</td>
+        <td style="padding:7px 10px;border-bottom:1px solid #e2e8f0;">
+          <span style="display:inline-block;padding:2px 8px;border-radius:9999px;font-size:11px;font-weight:600;
+            background:${sevBg[rl]};color:${sevText[rl]};border:1px solid ${sevColor[rl]}40;">
+            ${rl.charAt(0).toUpperCase() + rl.slice(1)}
+          </span>
+        </td>
+      </tr>`;
+  }).join('');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>LADS Security Report — ${dateStr}</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Inter', Arial, sans-serif; background: #ffffff; color: #0f172a; font-size: 13px; line-height: 1.6; }
+    @page { size: A4; margin: 0; }
+
+    /* ── Cover Page ── */
+    .cover {
+      width: 210mm; height: 297mm;
+      background: linear-gradient(160deg, #0f172a 0%, #1e3a5f 60%, #0e7490 100%);
+      display: flex; flex-direction: column; justify-content: space-between;
+      padding: 60px 56px; page-break-after: always;
+    }
+    .cover-logo { display: flex; align-items: center; gap: 14px; }
+    .cover-logo-icon {
+      width: 52px; height: 52px; background: rgba(6,182,212,0.25); border: 1px solid rgba(6,182,212,0.5);
+      border-radius: 14px; display: flex; align-items: center; justify-content: center;
+    }
+    .cover-logo-icon svg { width: 30px; height: 30px; stroke: #22d3ee; fill: none; }
+    .cover-logo-text { color: #f1f5f9; }
+    .cover-logo-text h1 { font-size: 22px; font-weight: 800; letter-spacing: 0.5px; }
+    .cover-logo-text p  { font-size: 12px; color: #94a3b8; margin-top: 2px; }
+    .cover-main { }
+    .cover-tag {
+      display: inline-block; background: rgba(6,182,212,0.2); border: 1px solid rgba(6,182,212,0.4);
+      color: #22d3ee; font-size: 11px; font-weight: 600; letter-spacing: 1.5px; text-transform: uppercase;
+      padding: 6px 14px; border-radius: 6px; margin-bottom: 24px;
+    }
+    .cover-main h2 { font-size: 42px; font-weight: 800; color: #f1f5f9; line-height: 1.15; margin-bottom: 14px; }
+    .cover-main h2 span { color: #22d3ee; }
+    .cover-main p  { font-size: 15px; color: #94a3b8; max-width: 400px; }
+    .cover-footer { border-top: 1px solid rgba(255,255,255,0.1); padding-top: 24px; display: flex; justify-content: space-between; }
+    .cover-footer span { color: #64748b; font-size: 12px; }
+    .cover-footer strong { color: #94a3b8; }
+    .cover-stat-row { display: flex; gap: 28px; margin-top: 40px; }
+    .cover-stat {
+      background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 12px; padding: 20px 24px; flex: 1;
+    }
+    .cover-stat .val { font-size: 32px; font-weight: 800; color: #f1f5f9; }
+    .cover-stat .lbl { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.8px; margin-top: 4px; }
+
+    /* ── Body Pages ── */
+    .page { width: 210mm; padding: 40px 48px; page-break-after: always; }
+    .page:last-child { page-break-after: auto; }
+
+    .section-header {
+      display: flex; align-items: center; gap: 10px; margin-bottom: 20px;
+      padding-bottom: 10px; border-bottom: 2px solid #e2e8f0;
+    }
+    .section-header .dot { width: 10px; height: 10px; border-radius: 50%; background: #0e7490; flex-shrink: 0; }
+    .section-header h3 { font-size: 17px; font-weight: 700; color: #0f172a; }
+
+    .page-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 32px; padding-bottom: 16px; border-bottom: 1px solid #e2e8f0;
+    }
+    .page-header .brand { font-size: 13px; font-weight: 700; color: #0e7490; }
+    .page-header .meta  { font-size: 11px; color: #94a3b8; }
+
+    /* Summary cards */
+    .stat-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 16px; margin-bottom: 32px; }
+    .stat-box {
+      border-radius: 12px; padding: 18px 16px;
+      border: 1px solid #e2e8f0; background: #f8fafc;
+    }
+    .stat-box .num { font-size: 28px; font-weight: 800; }
+    .stat-box .lbl { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.6px; margin-top: 4px; }
+    .stat-box.red   { background:#fef2f2; border-color:#fecaca; } .stat-box.red   .num { color:#991b1b; }
+    .stat-box.amber { background:#fffbeb; border-color:#fde68a; } .stat-box.amber .num { color:#92400e; }
+    .stat-box.green { background:#f0fdf4; border-color:#bbf7d0; } .stat-box.green .num { color:#14532d; }
+    .stat-box.blue  { background:#eff6ff; border-color:#bfdbfe; } .stat-box.blue  .num { color:#1e40af; }
+
+    /* Tables */
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    thead tr { background: #f1f5f9; }
+    thead th { padding: 9px 10px; text-align: left; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: #475569; border-bottom: 2px solid #e2e8f0; }
+    tbody tr:nth-child(even) td { background: #f8fafc; }
+    tbody tr:hover td { background: #f0f9ff; }
+
+    /* Conclusion box */
+    .conclusion {
+      margin-top: 30px; padding: 20px 24px;
+      background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 12px;
+    }
+    .conclusion h4 { font-size: 14px; font-weight: 700; color: #0c4a6e; margin-bottom: 8px; }
+    .conclusion p  { font-size: 12px; color: #075985; line-height: 1.7; }
+    .conclusion ul { font-size: 12px; color: #075985; padding-left: 18px; margin-top: 8px; line-height: 2; }
+
+    /* Footer bar */
+    .footer-bar {
+      margin-top: 40px; padding-top: 14px; border-top: 1px solid #e2e8f0;
+      display: flex; justify-content: space-between; font-size: 10px; color: #94a3b8;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ══════ COVER PAGE ══════ -->
+<div class="cover">
+  <div class="cover-logo">
+    <div class="cover-logo-icon">
+      <svg viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+    </div>
+    <div class="cover-logo-text">
+      <h1>LADS</h1>
+      <p>Log Anomaly Detection System</p>
+    </div>
+  </div>
+
+  <div class="cover-main">
+    <div class="cover-tag">Security Report</div>
+    <h2>Log Anomaly<br>Detection <span>Report</span></h2>
+    <p>Comprehensive analysis of system logs, security events, and anomaly detections for the reporting period.</p>
+
+    <div class="cover-stat-row">
+      <div class="cover-stat">
+        <div class="val">${state.stats.totalLogs.toLocaleString()}</div>
+        <div class="lbl">Total Logs</div>
+      </div>
+      <div class="cover-stat">
+        <div class="val">${state.mockAlerts.length}</div>
+        <div class="lbl">Alerts</div>
+      </div>
+      <div class="cover-stat">
+        <div class="val">${criticalCount}</div>
+        <div class="lbl">Critical</div>
+      </div>
+      <div class="cover-stat">
+        <div class="val">${state.stats.uniqueIPs}</div>
+        <div class="lbl">Unique IPs</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cover-footer">
+    <span>Generated: <strong>${dateStr} at ${timeStr}</strong></span>
+    <span>Classification: <strong>INTERNAL USE ONLY</strong></span>
+  </div>
+</div>
+
+<!-- ══════ PAGE 2: EXECUTIVE SUMMARY ══════ -->
+<div class="page">
+  <div class="page-header">
+    <span class="brand">LADS · Log Anomaly Detection System</span>
+    <span class="meta">Report Date: ${dateStr}</span>
+  </div>
+
+  <div class="section-header"><div class="dot"></div><h3>Executive Summary</h3></div>
+
+  <div class="stat-grid">
+    <div class="stat-box blue">
+      <div class="num">${state.stats.totalLogs.toLocaleString()}</div>
+      <div class="lbl">Total Logs Processed</div>
+    </div>
+    <div class="stat-box red">
+      <div class="num">${criticalCount}</div>
+      <div class="lbl">Critical Alerts</div>
+    </div>
+    <div class="stat-box amber">
+      <div class="num">${warningCount}</div>
+      <div class="lbl">Warning Alerts</div>
+    </div>
+    <div class="stat-box green">
+      <div class="num">${resolvedCount}</div>
+      <div class="lbl">Resolved Events</div>
+    </div>
+  </div>
+
+  <div class="stat-grid" style="margin-bottom:0;">
+    <div class="stat-box">
+      <div class="num" style="color:#0e7490;">${state.stats.totalAlerts}</div>
+      <div class="lbl">Total Alerts Detected</div>
+    </div>
+    <div class="stat-box red">
+      <div class="num">${state.stats.failedLogins}</div>
+      <div class="lbl">Failed Login Attempts</div>
+    </div>
+    <div class="stat-box blue">
+      <div class="num">${state.stats.uniqueIPs}</div>
+      <div class="lbl">Unique IPs Tracked</div>
+    </div>
+    <div class="stat-box">
+      <div class="num" style="color:#0e7490;">${state.mockSuspiciousIPs.length}</div>
+      <div class="lbl">Suspicious IPs Flagged</div>
+    </div>
+  </div>
+
+  <div class="conclusion" style="margin-top:28px;">
+    <h4>Analysis Summary</h4>
+    <p>
+      During the reporting period, the LADS engine processed
+      <strong>${state.stats.totalLogs.toLocaleString()} log entries</strong> and detected
+      <strong>${state.mockAlerts.length} security events</strong> of varying severity.
+      A total of <strong>${criticalCount} critical</strong> and <strong>${warningCount} warning</strong> alerts
+      were raised. <strong>${state.mockSuspiciousIPs.length} IP addresses</strong> exhibited suspicious behaviour
+      and have been flagged for review. <strong>${resolvedCount} events</strong> have been resolved or blocked.
+    </p>
+    <ul>
+      <li>Brute-force and failed-login patterns were the dominant threat vectors.</li>
+      <li>Real-time WebSocket telemetry was active throughout the monitoring window.</li>
+      <li>Recommend immediate investigation of all remaining <em>Active</em> critical alerts.</li>
+    </ul>
+  </div>
+
+  <div class="footer-bar">
+    <span>LADS — Log Anomaly Detection System</span>
+    <span>Page 1 of 2</span>
+  </div>
+</div>
+
+<!-- ══════ PAGE 3: ALERTS TABLE ══════ -->
+<div class="page">
+  <div class="page-header">
+    <span class="brand">LADS · Log Anomaly Detection System</span>
+    <span class="meta">Report Date: ${dateStr}</span>
+  </div>
+
+  <div class="section-header"><div class="dot"></div><h3>Security Alerts (Top ${Math.min(state.mockAlerts.length, 50)})</h3></div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Timestamp</th>
+        <th>IP Address</th>
+        <th>Username</th>
+        <th>Event Type</th>
+        <th>Severity</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${alertRows || '<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:20px;">No alerts recorded</td></tr>'}
+    </tbody>
+  </table>
+
+  <div style="margin-top:32px;">
+    <div class="section-header"><div class="dot"></div><h3>Suspicious IP Addresses (Top ${Math.min(state.mockSuspiciousIPs.length, 20)})</h3></div>
+    <table>
+      <thead>
+        <tr>
+          <th>IP Address</th>
+          <th>Attempts</th>
+          <th>Last Seen</th>
+          <th>Risk Level</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${ipRows || '<tr><td colspan="4" style="text-align:center;color:#94a3b8;padding:20px;">No suspicious IPs recorded</td></tr>'}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="footer-bar">
+    <span>LADS — Log Anomaly Detection System</span>
+    <span>Page 2 of 2 · CONFIDENTIAL</span>
+  </div>
+</div>
+
+</body>
+</html>`;
+}
+
 // ============ UTILITIES ============
 function formatNumber(num) {
   return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
@@ -1124,13 +1439,27 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // Global theme toggle
+  // Global theme toggle — uses html.light for proper CSS-variable-based theming
   const themeToggleGlobal = document.getElementById('theme-toggle-global');
   if (themeToggleGlobal) {
     themeToggleGlobal.addEventListener('click', () => {
-      document.documentElement.classList.toggle('dark');
-      state.theme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
-      showNotification(state.theme === 'dark' ? 'Dark mode enabled' : 'Light mode enabled', 'info');
+      const html = document.documentElement;
+      const isLight = html.classList.toggle('light');
+      state.theme = isLight ? 'light' : 'dark';
+      // Keep Tailwind dark class in sync so its dark: utilities stay consistent
+      if (isLight) {
+        html.classList.remove('dark');
+      } else {
+        html.classList.add('dark');
+      }
+      // Swap the icon visibility manually
+      const moonIcon = themeToggleGlobal.querySelector('svg:first-child');
+      const sunIcon  = themeToggleGlobal.querySelector('svg:last-child');
+      if (moonIcon && sunIcon) {
+        moonIcon.style.display = isLight ? 'block' : 'none';
+        sunIcon.style.display  = isLight ? 'none'  : 'block';
+      }
+      showNotification(isLight ? 'Light mode enabled' : 'Dark mode enabled', 'info');
     });
   }
 
